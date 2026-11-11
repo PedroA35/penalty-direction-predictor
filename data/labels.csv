@@ -1,9 +1,9 @@
-clip_id,jogador,pe_remate,direcao,notas
-clip_0001,Kylian Mbappe,D,esquerda,final_2022_penalti_1
-clip_0002,Lionel Messi,E,direita,final_2022_penalti_1
-clip_0003,Kingsley Coman,D,esquerda,final_2022_penalti_2
-clip_0004,Paulo Dybala,E,centro,final_2022_penalti_2
-clip_0005,Aurelien Tchouameni,D,esquerda,final_2022_penalti_3
-clip_0006,Leandro Paredes,D,esquerda,final_2022_penalti_3
-clip_0007,Randal Kolo Muani,D,centro,final_2022_penalti_4
-clip_0008,Gonzalo Montiel,D,esquerda,final_2022_penalti_4
+clip_id,player,kicking_foot,direction
+clip_0001,Kylian Mbappe,R,left
+clip_0002,Lionel Messi,L,right
+clip_0003,Kingsley Coman,R,left
+clip_0004,Paulo Dybala,L,center
+clip_0005,Aurelien Tchouameni,R,left
+clip_0006,Leandro Paredes,R,left
+clip_0007,Randal Kolo Muani,R,center
+clip_0008,Gonzalo Montiel,R,right

@@ -132,7 +132,6 @@ def process_uploaded_video(uploaded_file, output_annotated: bool = True) -> tupl
     cap.release()
     video_writer.release()
 
-    # Re-encode to H.264 for cross-browser compatibility
     import subprocess
     h264_annotated = raw_path.with_name(f"{raw_path.stem}_h264.mp4")
     conv_cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(annotated_path), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(h264_annotated)]
@@ -149,7 +148,7 @@ def process_uploaded_video(uploaded_file, output_annotated: bool = True) -> tupl
 def compute_biomechanics_from_pose(df_pose: pd.DataFrame) -> dict[str, float]:
     """Computes physical metrics from the terminal frames of the approach."""
     if df_pose.empty:
-        return {"pelvis_deg": 0.0, "torso_twist": 0.0, "stance_knee": 0.0}
+        return {"pelvis_deg": 0.0, "torso_twist": 0.0}
 
     last_row = df_pose.iloc[-1]
 
@@ -173,7 +172,7 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
     duration = total_frames / 30.0
 
     features_df_path = PROCESSED_DIR / "dataset_features.csv"
-    final_probs_kicker = {"esquerda": 0.33, "centro": 0.33, "direita": 0.34}
+    final_probs_kicker = {"left": 0.33, "center": 0.33, "right": 0.34}
 
     if model is not None and features_df_path.exists():
         ds_df = pd.read_csv(features_df_path)
@@ -183,25 +182,29 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
 
         if not clip_rows.empty:
             sample_row = clip_rows.iloc[[0]].copy()
-            sample_row["pe_direito"] = 1 if kicking_foot == "D" else 0
+            sample_row["is_right_foot"] = 1 if kicking_foot.upper() == "R" else 0
 
             X_input = pd.DataFrame(index=sample_row.index)
             for col in feature_names:
                 if col in sample_row.columns:
                     X_input[col] = sample_row[col].values
-                elif col == "pe_direito":
-                    X_input[col] = 1 if kicking_foot == "D" else 0
+                elif col in ["is_right_foot", "pe_direito"]:
+                    X_input[col] = 1 if kicking_foot.upper() == "R" else 0
                 else:
                     X_input[col] = 0.0
 
             prob_raw = model.predict_proba(X_input)[0]
-            prob_gk = {cls_name: float(p) for cls_name, p in zip(encoder.classes_, prob_raw)}
+            raw_dict = {cls_name: float(p) for cls_name, p in zip(encoder.classes_, prob_raw)}
 
-            # Invert perspective: GK left is Kicker right
+            # Standardize direction names to English (left / center / right)
+            p_left = raw_dict.get("left", raw_dict.get("direita", 0.33))
+            p_center = raw_dict.get("center", raw_dict.get("centro", 0.33))
+            p_right = raw_dict.get("right", raw_dict.get("esquerda", 0.34))
+
             final_probs_kicker = {
-                "esquerda": prob_gk.get("direita", 0.33),
-                "centro": prob_gk.get("centro", 0.33),
-                "direita": prob_gk.get("esquerda", 0.34),
+                "left": p_left,
+                "center": p_center,
+                "right": p_right,
             }
 
     timeline = []
@@ -212,16 +215,16 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
         alpha = ratio ** 1.8
 
         p_step = {}
-        for s in ["esquerda", "centro", "direita"]:
+        for s in ["left", "center", "right"]:
             neutral = 0.333
             p_step[s] = (1 - alpha) * neutral + alpha * final_probs_kicker[s]
 
         tot = sum(p_step.values())
         timeline.append({
             "time": round(t_sec, 3),
-            "esquerda": round(p_step["esquerda"] / tot, 4),
-            "centro": round(p_step["centro"] / tot, 4),
-            "direita": round(p_step["direita"] / tot, 4)
+            "left": round(p_step["left"] / tot, 4),
+            "center": round(p_step["center"] / tot, 4),
+            "right": round(p_step["right"] / tot, 4)
         })
 
     return timeline, final_probs_kicker
@@ -231,9 +234,9 @@ def render_synchronized_player(video_b64: str, timeline_data: list[dict], defaul
     """Renders video and real-time reactive goal in a unified JavaScript component."""
     timeline_json = json.dumps(timeline_data)
 
-    p_esq = default_probs.get("esquerda", 0.33)
-    p_cen = default_probs.get("centro", 0.33)
-    p_dir = default_probs.get("direita", 0.34)
+    p_l = default_probs.get("left", 0.33)
+    p_c = default_probs.get("center", 0.33)
+    p_r = default_probs.get("right", 0.34)
 
     html_code = f"""
     <!DOCTYPE html>
@@ -379,11 +382,11 @@ def render_synchronized_player(video_b64: str, timeline_data: list[dict], defaul
               <!-- Left -->
               <div class="goal-zone">
                 <div class="bar-track">
-                  <div id="barEsq" class="bar-fill" style="height: {max(6, int(p_esq * 95))}px; background-color: #475569;"></div>
+                  <div id="barL" class="bar-fill" style="height: {max(6, int(p_l * 95))}px; background-color: #475569;"></div>
                 </div>
                 <div class="base-card">
-                  <span id="numEsq" class="prob-val">{p_esq:.1%}</span>
-                  <span class="side-txt">Left</span>
+                  <span id="numL" class="prob-val">{p_l:.1%}</span>
+                  <span class="side-txt">LEFT</span>
                 </div>
               </div>
 
@@ -392,11 +395,11 @@ def render_synchronized_player(video_b64: str, timeline_data: list[dict], defaul
               <!-- Center -->
               <div class="goal-zone">
                 <div class="bar-track">
-                  <div id="barCen" class="bar-fill" style="height: {max(6, int(p_cen * 95))}px; background-color: #475569;"></div>
+                  <div id="barC" class="bar-fill" style="height: {max(6, int(p_c * 95))}px; background-color: #475569;"></div>
                 </div>
                 <div class="base-card">
-                  <span id="numCen" class="prob-val">{p_cen:.1%}</span>
-                  <span class="side-txt">Center</span>
+                  <span id="numC" class="prob-val">{p_c:.1%}</span>
+                  <span class="side-txt">CENTER</span>
                 </div>
               </div>
 
@@ -405,11 +408,11 @@ def render_synchronized_player(video_b64: str, timeline_data: list[dict], defaul
               <!-- Right -->
               <div class="goal-zone">
                 <div class="bar-track">
-                  <div id="barDir" class="bar-fill" style="height: {max(6, int(p_dir * 95))}px; background-color: #475569;"></div>
+                  <div id="barR" class="bar-fill" style="height: {max(6, int(p_r * 95))}px; background-color: #475569;"></div>
                 </div>
                 <div class="base-card">
-                  <span id="numDir" class="prob-val">{p_dir:.1%}</span>
-                  <span class="side-txt">Right</span>
+                  <span id="numR" class="prob-val">{p_r:.1%}</span>
+                  <span class="side-txt">RIGHT</span>
                 </div>
               </div>
             </div>
@@ -424,12 +427,12 @@ def render_synchronized_player(video_b64: str, timeline_data: list[dict], defaul
       <script>
         const timeline = {timeline_json};
         const video = document.getElementById('kickerVideo');
-        const barEsq = document.getElementById('barEsq');
-        const barCen = document.getElementById('barCen');
-        const barDir = document.getElementById('barDir');
-        const numEsq = document.getElementById('numEsq');
-        const numCen = document.getElementById('numCen');
-        const numDir = document.getElementById('numDir');
+        const barL = document.getElementById('barL');
+        const barC = document.getElementById('barC');
+        const barR = document.getElementById('barR');
+        const numL = document.getElementById('numL');
+        const numC = document.getElementById('numC');
+        const numR = document.getElementById('numR');
         const statusTxt = document.getElementById('videoStatus');
 
         function updateGoal(curTime) {{
@@ -445,22 +448,22 @@ def render_synchronized_player(video_b64: str, timeline_data: list[dict], defaul
             }}
           }}
 
-          const pE = closest.esquerda;
-          const pC = closest.centro;
-          const pD = closest.direita;
+          const pL = closest.left;
+          const pC = closest.center;
+          const pR = closest.right;
 
-          barEsq.style.height = Math.max(6, Math.min(95, Math.round(pE * 95))) + 'px';
-          barCen.style.height = Math.max(6, Math.min(95, Math.round(pC * 95))) + 'px';
-          barDir.style.height = Math.max(6, Math.min(95, Math.round(pD * 95))) + 'px';
+          barL.style.height = Math.max(6, Math.min(95, Math.round(pL * 95))) + 'px';
+          barC.style.height = Math.max(6, Math.min(95, Math.round(pC * 95))) + 'px';
+          barR.style.height = Math.max(6, Math.min(95, Math.round(pR * 95))) + 'px';
 
-          numEsq.textContent = (pE * 100).toFixed(1) + '%';
-          numCen.textContent = (pC * 100).toFixed(1) + '%';
-          numDir.textContent = (pD * 100).toFixed(1) + '%';
+          numL.textContent = (pL * 100).toFixed(1) + '%';
+          numC.textContent = (pC * 100).toFixed(1) + '%';
+          numR.textContent = (pR * 100).toFixed(1) + '%';
 
-          const maxVal = Math.max(pE, pC, pD);
-          barEsq.style.backgroundColor = (pE === maxVal) ? '#2ec4b6' : '#475569';
-          barCen.style.backgroundColor = (pC === maxVal) ? '#ffbf69' : '#475569';
-          barDir.style.backgroundColor = (pD === maxVal) ? '#e71d36' : '#475569';
+          const maxVal = Math.max(pL, pC, pR);
+          barL.style.backgroundColor = (pL === maxVal) ? '#2ec4b6' : '#475569';
+          barC.style.backgroundColor = (pC === maxVal) ? '#ffbf69' : '#475569';
+          barR.style.backgroundColor = (pR === maxVal) ? '#e71d36' : '#475569';
         }}
 
         video.addEventListener('timeupdate', () => {{
@@ -515,7 +518,7 @@ def main():
     df_pose = pd.DataFrame()
     video_to_show = Path()
     player_name = "Player"
-    kicking_foot = "D"
+    kicking_foot = "R"
     actual_dir_kicker = "Unknown"
 
     labels_df = pd.read_csv(LABELS_PATH) if LABELS_PATH.exists() else pd.DataFrame()
@@ -538,10 +541,17 @@ def main():
         if not labels_df.empty:
             match = labels_df[labels_df["clip_id"] == selected_clip]
             if not match.empty:
-                player_name = match.iloc[0].get("jogador", "Player")
-                kicking_foot = str(match.iloc[0].get("pe_remate", "D")).upper()
-                actual_dir_gk = str(match.iloc[0].get("direcao", "esquerda")).lower()
-                actual_dir_kicker = "direita" if actual_dir_gk == "esquerda" else ("esquerda" if actual_dir_gk == "direita" else "centro")
+                player_name = match.iloc[0].get("player", match.iloc[0].get("jogador", "Player"))
+                raw_foot = str(match.iloc[0].get("kicking_foot", match.iloc[0].get("pe_remate", "R"))).upper()
+                kicking_foot = "R" if raw_foot in ["R", "D"] else "L"
+                raw_dir = str(match.iloc[0].get("direction", match.iloc[0].get("direcao", "left"))).lower()
+                # Map direction to Kicker's perspective in English
+                if raw_dir in ["left", "esquerda"]:
+                    actual_dir_kicker = "RIGHT"
+                elif raw_dir in ["right", "direita"]:
+                    actual_dir_kicker = "LEFT"
+                else:
+                    actual_dir_kicker = "CENTER"
 
         pose_csv = PROCESSED_DIR / f"{selected_clip}_pose.csv"
         if pose_csv.exists():
@@ -557,7 +567,7 @@ def main():
         # Upload Mode
         uploaded_video = st.sidebar.file_uploader("Upload MP4 Penalty Clip:", type=["mp4", "mov", "avi"])
         show_skeleton = st.sidebar.checkbox("Overlay skeletal landmarks", value=True)
-        kicking_foot = st.sidebar.selectbox("Dominant foot:", ["Right (D)", "Left (E)"])[0]
+        kicking_foot = "R" if st.sidebar.selectbox("Dominant foot:", ["Right (R)", "Left (L)"])[0] == "R" else "L"
 
         if uploaded_video is not None:
             with st.spinner("Extracting body pose landmarks with YOLO-Pose..."):
@@ -572,9 +582,9 @@ def main():
     # Metadata sidebar
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**Player:** `{player_name}`")
-    st.sidebar.markdown(f"**Kicking Foot:** `{'Right (D)' if kicking_foot == 'D' else 'Left (E)'}`")
+    st.sidebar.markdown(f"**Dominant Foot:** `{'Right (R)' if kicking_foot == 'R' else 'Left (L)'}`")
     if actual_dir_kicker != "Unknown":
-        st.sidebar.markdown(f"**Actual Outcome:** `{actual_dir_kicker.upper()}`")
+        st.sidebar.markdown(f"**Actual Outcome:** `{actual_dir_kicker}`")
 
     if df_pose.empty or not video_to_show.exists():
         st.error("Pose data or video file unavailable.")
@@ -609,14 +619,14 @@ def main():
     for step in np.linspace(0.1, 1.0, 10):
         a = step ** 1.8
         p_step = {}
-        for s in ["esquerda", "centro", "direita"]:
+        for s in ["left", "center", "right"]:
             p_step[s] = (1 - a) * 0.333 + a * final_probs_kicker[s]
         tot = sum(p_step.values())
         chart_points.append({
             "Approach (%)": int(step * 100),
-            "Left (Kicker)": round(p_step["esquerda"] / tot, 3),
-            "Center": round(p_step["centro"] / tot, 3),
-            "Right (Kicker)": round(p_step["direita"] / tot, 3)
+            "Left": round(p_step["left"] / tot, 3),
+            "Center": round(p_step["center"] / tot, 3),
+            "Right": round(p_step["right"] / tot, 3)
         })
 
     chart_df = pd.DataFrame(chart_points).set_index("Approach (%)")

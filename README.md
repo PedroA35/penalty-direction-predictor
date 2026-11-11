@@ -1,6 +1,11 @@
 # Penalty Kick Direction Predictor (Pose-Based)
 
-Predicting football penalty kick direction (left / center / right, from the kicker's perspective) based on pre-contact body posture and biomechanics.
+[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Framework: YOLOv8-Pose](https://img.shields.io/badge/YOLOv8--Pose-Ultralytics-orange.svg)](https://docs.ultralytics.com/)
+[![Dashboard: Streamlit](https://img.shields.io/badge/Dashboard-Streamlit-red.svg)](https://streamlit.io/)
+
+Predicting football penalty kick direction (`left` / `center` / `right`, from the kicker's visual perspective) based on pre-contact body posture and biomechanics.
 
 ![Dashboard Preview](assets/demo.png)
 
@@ -11,7 +16,7 @@ Predicting football penalty kick direction (left / center / right, from the kick
 Traditional video-based computer vision approaches often rely on heavy 3D convolutional networks over raw RGB pixel frames. These models require dedicated GPU hardware, are computationally expensive to run, and frequently suffer from shortcut learning (e.g., memorizing background features or specific player jerseys instead of physical movement).
 
 This project employs a lightweight, interpretable biomechanical framework:
-1. **Pose Estimation (YOLOv8-Pose):** Extracts temporal trajectories of 17 key anatomical joints (shoulders, hips, knees, ankles) frame-by-frame on standard CPU hardware.
+1. **Pose Estimation (YOLOv8-Pose):** Extracts temporal trajectories of 17 key anatomical joints (shoulders, pelvis, knees, ankles) frame-by-frame on standard CPU hardware.
 2. **Biomechanical Feature Engineering:** Computes rotation angles of the pelvis, shoulder orientation, axial spinal torsion, stance knee flexion, and relative foot placement.
 3. **Scale Invariance:** Normalizes all spatial metrics by trunk length (shoulder midpoint to hip midpoint) to account for varying camera distances, zoom levels, and broadcast perspectives.
 4. **Temporal Cutoffs (Early Prediction):** Evaluates posture at progressive stages of the run-up (50%, 75%, and 100% leading up to the stance-foot ground contact) to assess when kick intent becomes physically discernible.
@@ -38,7 +43,7 @@ The feature extractor translates raw $(x, y)$ coordinate streams into domain-rel
 * **Shoulder Angle and Trunk Torsion:** The angular difference between the shoulder line and hip line captures rotational torso torque prior to ball impact.
 * **Stance Knee Flexion:** Angle between hip, knee, and ankle of the supporting leg at ground contact.
 * **Normalized Foot Coordinates:** Relative horizontal and vertical offset between the support foot and the pelvic center, divided by trunk length.
-* **Dominant Kicking Foot:** Binary indicator (Right / Left).
+* **Dominant Kicking Foot:** Binary indicator (`R` for right, `L` for left).
 
 ---
 
@@ -53,7 +58,7 @@ penalty-direction-predictor/
 ├── assets/
 │   └── demo.png             # Dashboard preview screenshot
 ├── data/
-│   ├── labels.csv           # Annotation metadata (clip_id, player, foot, direction)
+│   ├── labels.csv           # Annotation metadata (clip_id, player, kicking_foot, direction)
 │   ├── raw/                 # Source raw footage (excluded from version control)
 │   ├── clips/               # Segmented run-up clips (excluded from version control)
 │   └── processed/           # Extracted joint coordinates and feature datasets
@@ -104,14 +109,15 @@ streamlit run app/app.py
 Define metadata in `data/labels.csv`:
 
 ```csv
-clip_id,jogador,pe_remate,direcao,notas
-clip_0001,Kylian Mbappe,D,esquerda,world_cup_final_2022
-clip_0002,Lionel Messi,E,direita,world_cup_final_2022
+clip_id,player,kicking_foot,direction
+clip_0001,Kylian Mbappe,R,left
+clip_0002,Lionel Messi,L,right
 ```
 
 * `clip_id`: Corresponds to the video filename in `data/clips/<clip_id>.mp4`.
-* `pe_remate`: Kicking foot (`D` for right, `E` for left).
-* `direcao`: Direction from the goalkeeper's perspective (`esquerda` / `centro` / `direita`).
+* `player`: Name of the kicker.
+* `kicking_foot`: `R` (Right) or `L` (Left).
+* `direction`: Kick target direction (`left` / `center` / `right`).
 
 ### Step 2: Pose Extraction and Visual Validation
 
@@ -148,3 +154,11 @@ Runs player-grouped cross-validation (`StratifiedGroupKFold`), benchmarks agains
 * **Player Leakage Prevention:** Standard random splits produce artificially inflated scores because a model can memorize a player's individual running signature. By evaluating exclusively with `GroupKFold` grouped by player, all evaluation folds test on athletes unseen during training.
 * **Baseline Comparison:** In small or unbalanced datasets (such as penalty shootouts where goalkeepers or takers favor one side), a trivial model predicting the majority class can achieve deceptive accuracy. Comparing model performance directly against this baseline is mandatory.
 * **Sample Size Considerations:** Initial prototype results on small datasets serve primarily to validate feature quality and tracking stability. Ongoing work focuses on expanding the dataset to 300+ penalty instances across multiple competitions to improve generalization across varied kicking styles.
+
+---
+
+## 8. Academic References & Related Works
+
+1. **Lees, A., & Nolan, L. (1998).** *The biomechanics of soccer: A review.* Journal of Sports Sciences, 16(3), 211-234.
+2. **Savelsbergh, G. J., et al. (2002).** *Visual search, anticipation and expertise in soccer goalkeepers.* Journal of Sports Sciences, 20(3), 279-287.
+3. **Jocher, G., Chaurasia, A., & Qiu, J. (2023).** *Ultralytics YOLOv8-Pose (Version 8.0.0).* GitHub repository.
