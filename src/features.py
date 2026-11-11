@@ -1,7 +1,8 @@
 """
-Biomechanical Feature Engineering Module.
-Extracts joint angles and trunk-normalized spatial metrics from raw pose coordinates.
-Supports retrospective temporal cutoffs (e.g. 50%, 75%, 100% of the approach).
+Biomechanical Feature Engineering Module with:
+- Approach Run-Up Angle and Trajectory Linearity
+- Angular velocities (rate of change of pelvis and torso twist prior to impact)
+- Virtual Biomechanical Mirroring (flips kinematics to balance right/left footed takers)
 """
 
 from pathlib import Path
@@ -81,11 +82,14 @@ def extract_frame_features(row: pd.Series) -> dict[str, float]:
         "knee_distance": knee_distance,
         "l_foot_rel_x": l_foot_rel_x,
         "r_foot_rel_x": r_foot_rel_x,
+        "mid_hip_x": mid_hip[0],
+        "mid_hip_y": mid_hip[1],
+        "torso_length": torso_length
     }
 
 
 def generate_clip_summary_features(df_pose: pd.DataFrame, fraction: float = 1.0) -> dict[str, float]:
-    """Aggregates kinematic features over a specified fraction of the run-up."""
+    """Aggregates kinematic features, angular velocities, and run-up approach trajectory."""
     total_frames = len(df_pose)
     if total_frames == 0:
         return {}
@@ -101,18 +105,77 @@ def generate_clip_summary_features(df_pose: pd.DataFrame, fraction: float = 1.0)
 
     last_row = df_feat.iloc[-1]
     for col in df_feat.columns:
-        summary[f"{col}_last"] = float(last_row[col])
+        if col not in ["mid_hip_x", "mid_hip_y", "torso_length"]:
+            summary[f"{col}_last"] = float(last_row[col])
 
     tail_window = df_feat.tail(min(5, len(df_feat)))
     for col in df_feat.columns:
-        summary[f"{col}_mean_end"] = float(tail_window[col].mean())
-        summary[f"{col}_std_end"] = float(tail_window[col].std(ddof=0))
+        if col not in ["mid_hip_x", "mid_hip_y", "torso_length"]:
+            summary[f"{col}_mean_end"] = float(tail_window[col].mean())
+            summary[f"{col}_std_end"] = float(tail_window[col].std(ddof=0))
+
+    # 1. Velocidade Angular nos últimos 5 frames
+    if len(df_feat) >= 5:
+        hip_velocity = float(df_feat["hip_angle"].iloc[-1] - df_feat["hip_angle"].iloc[-5])
+        torso_twist_velocity = float(df_feat["torso_twist"].iloc[-1] - df_feat["torso_twist"].iloc[-5])
+    else:
+        hip_velocity = 0.0
+        torso_twist_velocity = 0.0
+
+    summary["hip_angular_velocity"] = hip_velocity
+    summary["torso_twist_velocity"] = torso_twist_velocity
+
+    # 2. Ângulo e Trajetória de Aproximação (Run-Up Vector)
+    start_hip = (df_feat["mid_hip_x"].iloc[0], df_feat["mid_hip_y"].iloc[0])
+    end_hip = (df_feat["mid_hip_x"].iloc[-1], df_feat["mid_hip_y"].iloc[-1])
+
+    dx_approach = float(end_hip[0] - start_hip[0])
+    dy_approach = float(end_hip[1] - start_hip[1])
+
+    # Ângulo relativo ao eixo de avanço em direção à baliza
+    approach_angle = float(np.degrees(np.arctan2(dx_approach, abs(dy_approach) if abs(dy_approach) > 1e-4 else 1.0)))
+    summary["approach_angle"] = approach_angle
+
+    # Deslocamento horizontal normalizado da corrida
+    avg_torso = float(df_feat["torso_length"].mean()) if "torso_length" in df_feat.columns else 1.0
+    summary["approach_lateral_drift"] = float(dx_approach / (avg_torso if avg_torso > 1e-4 else 1.0))
 
     return summary
 
 
-def build_dataset(fractions: list[float] = [0.5, 0.75, 1.0]) -> pd.DataFrame:
-    """Builds the tabular dataset combining labels.csv with pose-extracted features."""
+def mirror_pose_dataframe(df_pose: pd.DataFrame) -> pd.DataFrame:
+    """Espelha horizontalmente as coordenadas corporais para Data Augmentation."""
+    df_mirrored = df_pose.copy()
+
+    x_cols = [c for c in df_pose.columns if c.endswith("_x")]
+    for col in x_cols:
+        df_mirrored[col] = -df_mirrored[col]
+
+    pairs = [
+        ("left_shoulder", "right_shoulder"),
+        ("left_elbow", "right_elbow"),
+        ("left_wrist", "right_wrist"),
+        ("left_hip", "right_hip"),
+        ("left_knee", "right_knee"),
+        ("left_ankle", "right_ankle"),
+        ("left_eye", "right_eye"),
+        ("left_ear", "right_ear"),
+    ]
+
+    for l_part, r_part in pairs:
+        for suffix in ["_x", "_y", "_conf"]:
+            col_l = f"{l_part}{suffix}"
+            col_r = f"{r_part}{suffix}"
+            if col_l in df_mirrored.columns and col_r in df_mirrored.columns:
+                temp_val = df_mirrored[col_l].copy()
+                df_mirrored[col_l] = df_mirrored[col_r]
+                df_mirrored[col_r] = temp_val
+
+    return df_mirrored
+
+
+def build_dataset(fractions: list[float] = [0.5, 0.75, 1.0], augment_mirror: bool = True) -> pd.DataFrame:
+    """Constrói o dataset com ângulo de aproximação, velocidade angular e espelhamento."""
     if not LABELS_PATH.exists():
         print(f"[ERROR] Labels file not found: {LABELS_PATH}")
         return pd.DataFrame()
@@ -129,6 +192,7 @@ def build_dataset(fractions: list[float] = [0.5, 0.75, 1.0]) -> pd.DataFrame:
 
         df_pose = pd.read_csv(pose_file)
 
+        # 1. Amostra Original
         for frac in fractions:
             feat_dict = generate_clip_summary_features(df_pose, fraction=frac)
             if not feat_dict:
@@ -140,12 +204,38 @@ def build_dataset(fractions: list[float] = [0.5, 0.75, 1.0]) -> pd.DataFrame:
             feat_dict["direction"] = str(meta["direction"]).lower()
             rows.append(feat_dict)
 
+        # 2. Amostra Espelhada Virtual
+        if augment_mirror:
+            df_pose_mirrored = mirror_pose_dataframe(df_pose)
+
+            orig_foot = str(meta["kicking_foot"]).upper()
+            mirrored_foot = "L" if orig_foot == "R" else "R"
+
+            orig_dir = str(meta["direction"]).lower()
+            if orig_dir == "left":
+                mirrored_dir = "right"
+            elif orig_dir == "right":
+                mirrored_dir = "left"
+            else:
+                mirrored_dir = "center"
+
+            for frac in fractions:
+                feat_m = generate_clip_summary_features(df_pose_mirrored, fraction=frac)
+                if not feat_m:
+                    continue
+
+                feat_m["clip_id"] = f"{clip_id}_mirrored"
+                feat_m["player"] = f"{meta['player']}_mirror"
+                feat_m["kicking_foot"] = mirrored_foot
+                feat_m["direction"] = mirrored_dir
+                rows.append(feat_m)
+
     dataset = pd.DataFrame(rows)
     out_file = PROCESSED_DIR / "dataset_features.csv"
     dataset.to_csv(out_file, index=False)
-    print(f"[DATASET COMPLETE] {len(dataset)} samples saved to {out_file.name}")
+    print(f"[DATASET CONCLUÍDO] {len(dataset)} amostras geradas em {out_file.name}")
     return dataset
 
 
 if __name__ == "__main__":
-    build_dataset()
+    build_dataset(augment_mirror=True)

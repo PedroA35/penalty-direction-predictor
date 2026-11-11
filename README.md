@@ -1,6 +1,7 @@
+
 # Penalty Kick Direction Predictor (Pose-Based)
 
-[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
+[![Python](<https://img.shields.io/badge/Python-3.10%20%7C%203.12%20%7C%203.13-blue.svg>)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Framework: YOLOv8-Pose](https://img.shields.io/badge/YOLOv8--Pose-Ultralytics-orange.svg)](https://docs.ultralytics.com/)
 [![Dashboard: Streamlit](https://img.shields.io/badge/Dashboard-Streamlit-red.svg)](https://streamlit.io/)
@@ -16,6 +17,7 @@ Predicting football penalty kick direction (`left` / `center` / `right`, from th
 Traditional video-based computer vision approaches often rely on heavy 3D convolutional networks over raw RGB pixel frames. These models require dedicated GPU hardware, are computationally expensive to run, and frequently suffer from shortcut learning (e.g., memorizing background features or specific player jerseys instead of physical movement).
 
 This project employs a lightweight, interpretable biomechanical framework:
+
 1. **Pose Estimation (YOLOv8-Pose):** Extracts temporal trajectories of 17 key anatomical joints (shoulders, pelvis, knees, ankles) frame-by-frame on standard CPU hardware.
 2. **Biomechanical Feature Engineering:** Computes rotation angles of the pelvis, shoulder orientation, axial spinal torsion, stance knee flexion, and relative foot placement.
 3. **Scale Invariance:** Normalizes all spatial metrics by trunk length (shoulder midpoint to hip midpoint) to account for varying camera distances, zoom levels, and broadcast perspectives.
@@ -41,6 +43,8 @@ The feature extractor translates raw $(x, y)$ coordinate streams into domain-rel
 
 * **Pelvis Angle:** The vector between the left and right hip joints indicates whether the pelvis is open or closed relative to the goal.
 * **Shoulder Angle and Trunk Torsion:** The angular difference between the shoulder line and hip line captures rotational torso torque prior to ball impact.
+* **Approach Run-Up Angle:** Measures the angular trajectory and lateral drift of the pelvis from approach onset to ball contact (e.g. wide diagonal arc vs. linear approach).
+* **Angular Velocities:** Rate of change of pelvis and torso rotation across the terminal frames.
 * **Stance Knee Flexion:** Angle between hip, knee, and ankle of the supporting leg at ground contact.
 * **Normalized Foot Coordinates:** Relative horizontal and vertical offset between the support foot and the pelvic center, divided by trunk length.
 * **Dominant Kicking Foot:** Binary indicator (`R` for right, `L` for left).
@@ -86,7 +90,7 @@ penalty-direction-predictor/
 Clone the repository and set up a virtual environment:
 
 ```bash
-git clone https://github.com/<YOUR_USERNAME>/penalty-direction-predictor.git
+git clone https://github.com/PedroA35/penalty-direction-predictor.git
 cd penalty-direction-predictor
 
 python -m venv .venv
@@ -128,6 +132,7 @@ python src/pose.py
 ```
 
 This generates:
+
 * `data/clips/<clip_id>_annotated.mp4`: Rendered video overlaying the skeletal keypoints for manual quality control.
 * `data/processed/<clip_id>_pose.csv`: Frame-by-frame joint coordinates.
 

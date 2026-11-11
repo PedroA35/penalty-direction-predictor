@@ -3,7 +3,7 @@ Penalty Kick Direction Predictor - Interactive Dashboard
 Streamlit app with:
 - Live real-time video-goal synchronization
 - Custom video upload and on-the-fly pose extraction
-- Biomechanical insight cards and methodological tabs
+- Biomechanical insight cards (Approach Angle, Pelvis Rotation, Trunk Torsion)
 """
 
 import base64
@@ -145,34 +145,77 @@ def process_uploaded_video(uploaded_file, output_annotated: bool = True) -> tupl
     return df_pose, raw_path, final_annotated
 
 
-def compute_biomechanics_from_pose(df_pose: pd.DataFrame) -> dict[str, float]:
-    """Computes physical metrics from the terminal frames of the approach."""
+def compute_biomechanics_from_pose(df_pose: pd.DataFrame) -> dict[str, any]:
+    """Computes physical metrics from pose series with robust NaN interpolation."""
     if df_pose.empty:
-        return {"pelvis_deg": 0.0, "torso_twist": 0.0}
+        return {"pelvis_deg": 0.0, "torso_twist": 0.0, "approach_angle": 0.0, "approach_type": "Direct"}
 
-    last_row = df_pose.iloc[-1]
+    # Limpar NaNs por interpolação linear suave
+    clean_df = df_pose.interpolate(method="linear", limit_direction="both").bfill().ffill().fillna(0.0)
 
-    l_sh = (last_row.get("left_shoulder_x", 0), last_row.get("left_shoulder_y", 0))
-    r_sh = (last_row.get("right_shoulder_x", 0), last_row.get("right_shoulder_y", 0))
-    l_hip = (last_row.get("left_hip_x", 0), last_row.get("left_hip_y", 0))
-    r_hip = (last_row.get("right_hip_x", 0), last_row.get("right_hip_y", 0))
+    # Filtrar apenas frames válidos com deteção
+    valid_rows = clean_df[clean_df["left_hip_x"].abs() > 1e-4]
+    if valid_rows.empty:
+        valid_rows = clean_df
 
-    sh_deg = np.degrees(np.arctan2(r_sh[1] - l_sh[1], r_sh[0] - l_sh[0]))
-    hip_deg = np.degrees(np.arctan2(r_hip[1] - l_hip[1], r_hip[0] - l_hip[0]))
+    first_row = valid_rows.iloc[0]
+    last_row = valid_rows.iloc[-1]
+
+    # Angles at impact
+    l_sh = (float(last_row.get("left_shoulder_x", 0)), float(last_row.get("left_shoulder_y", 0)))
+    r_sh = (float(last_row.get("right_shoulder_x", 0)), float(last_row.get("right_shoulder_y", 0)))
+    l_hip = (float(last_row.get("left_hip_x", 0)), float(last_row.get("left_hip_y", 0)))
+    r_hip = (float(last_row.get("right_hip_x", 0)), float(last_row.get("right_hip_y", 0)))
+
+    sh_deg = float(np.degrees(np.arctan2(r_sh[1] - l_sh[1], r_sh[0] - l_sh[0]))) if (r_sh[0] - l_sh[0]) != 0 else 0.0
+    hip_deg = float(np.degrees(np.arctan2(r_hip[1] - l_hip[1], r_hip[0] - l_hip[0]))) if (r_hip[0] - l_hip[0]) != 0 else 0.0
+
+    torso_twist = float(sh_deg - hip_deg)
+
+    # Approach Vector: Start of run-up to stance foot contact
+    start_hip_x = (float(first_row.get("left_hip_x", 0)) + float(first_row.get("right_hip_x", 0))) / 2.0
+    start_hip_y = (float(first_row.get("left_hip_y", 0)) + float(first_row.get("right_hip_y", 0))) / 2.0
+
+    end_hip_x = (l_hip[0] + r_hip[0]) / 2.0
+    end_hip_y = (l_hip[1] + r_hip[1]) / 2.0
+
+    dx = float(end_hip_x - start_hip_x)
+    dy = float(end_hip_y - start_hip_y)
+
+    app_angle = float(np.degrees(np.arctan2(dx, abs(dy) if abs(dy) > 1e-4 else 1.0)))
+
+    # Fallback para evitar NaN em casos extremos
+    if np.isnan(hip_deg):
+        hip_deg = 0.0
+    if np.isnan(torso_twist):
+        torso_twist = 0.0
+    if np.isnan(app_angle):
+        app_angle = 0.0
+
+    # Classification
+    abs_angle = abs(app_angle)
+    if abs_angle > 28:
+        app_type = "Wide Arc"
+    elif abs_angle > 14:
+        app_type = "Diagonal"
+    else:
+        app_type = "Linear"
 
     return {
-        "pelvis_deg": float(hip_deg),
-        "torso_twist": float(sh_deg - hip_deg),
+        "pelvis_deg": hip_deg,
+        "torso_twist": torso_twist,
+        "approach_angle": app_angle,
+        "approach_type": app_type
     }
 
 
 def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model, encoder, feature_names, kicking_foot: str) -> tuple[list[dict], dict[str, float]]:
-    """Calculates temporal probability evolution from the kicker's visual perspective."""
+    """Calculates temporal probability evolution directly from the kicker's visual perspective."""
     total_frames = len(df_pose)
     duration = total_frames / 30.0
 
     features_df_path = PROCESSED_DIR / "dataset_features.csv"
-    final_probs_kicker = {"left": 0.33, "center": 0.33, "right": 0.34}
+    final_probs = {"left": 0.33, "center": 0.33, "right": 0.34}
 
     if model is not None and features_df_path.exists():
         ds_df = pd.read_csv(features_df_path)
@@ -196,15 +239,10 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
             prob_raw = model.predict_proba(X_input)[0]
             raw_dict = {cls_name: float(p) for cls_name, p in zip(encoder.classes_, prob_raw)}
 
-            # Standardize direction names to English (left / center / right)
-            p_left = raw_dict.get("left", raw_dict.get("direita", 0.33))
-            p_center = raw_dict.get("center", raw_dict.get("centro", 0.33))
-            p_right = raw_dict.get("right", raw_dict.get("esquerda", 0.34))
-
-            final_probs_kicker = {
-                "left": p_left,
-                "center": p_center,
-                "right": p_right,
+            final_probs = {
+                "left": raw_dict.get("left", 0.33),
+                "center": raw_dict.get("center", 0.33),
+                "right": raw_dict.get("right", 0.34),
             }
 
     timeline = []
@@ -217,7 +255,7 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
         p_step = {}
         for s in ["left", "center", "right"]:
             neutral = 0.333
-            p_step[s] = (1 - alpha) * neutral + alpha * final_probs_kicker[s]
+            p_step[s] = (1 - alpha) * neutral + alpha * final_probs[s]
 
         tot = sum(p_step.values())
         timeline.append({
@@ -227,7 +265,7 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
             "right": round(p_step["right"] / tot, 4)
         })
 
-    return timeline, final_probs_kicker
+    return timeline, final_probs
 
 
 def render_synchronized_player(video_b64: str, timeline_data: list[dict], default_probs: dict):
@@ -495,14 +533,15 @@ def main():
         with tab1:
             st.markdown("""
             1. **Pose Extraction:** Detects 17 anatomical keypoints (shoulders, pelvis, knees, ankles) using lightweight YOLOv8-Pose on CPU.
-            2. **Feature Engineering:** Computes rotation angles of the pelvis, shoulder orientation, spinal torsion, and stance leg flexion.
+            2. **Feature Engineering:** Computes rotation angles of the pelvis, shoulder orientation, spinal torsion, stance leg flexion, and the run-up approach angle.
             3. **Inference Before Impact:** Evaluates the approach leading up to the stance-foot ground contact (before the ball is struck).
             """)
         with tab2:
             st.markdown("""
-            * **Pelvis Opening:** Right-footed players kicking cross-goal (to their right, goalkeeper's left) naturally open the pelvis earlier to transfer rotational momentum.
+            * **Approach Run-Up Angle:** Angle of the run-up vector relative to the goal axis. Wide arc runs facilitate cross-goal rotation, while linear runs favor direct power strikes.
+            * **Pelvis Opening:** Right-footed players kicking cross-goal naturally open the pelvis earlier to transfer rotational momentum.
             * **Torso Twist (X-Factor):** The angular difference between shoulder line and hip line measures rotational pre-stretch of the trunk muscles.
-            * **Scale Normalization:** All spatial coordinates are divided by trunk length (shoulder center to hip center), making analysis invariant to camera zoom.
+            * **Scale Normalization:** All spatial coordinates are divided by trunk length, making analysis invariant to camera zoom.
             """)
         with tab3:
             st.markdown("""
@@ -519,7 +558,7 @@ def main():
     video_to_show = Path()
     player_name = "Player"
     kicking_foot = "R"
-    actual_dir_kicker = "Unknown"
+    actual_direction = "Unknown"
 
     labels_df = pd.read_csv(LABELS_PATH) if LABELS_PATH.exists() else pd.DataFrame()
 
@@ -541,17 +580,10 @@ def main():
         if not labels_df.empty:
             match = labels_df[labels_df["clip_id"] == selected_clip]
             if not match.empty:
-                player_name = match.iloc[0].get("player", match.iloc[0].get("jogador", "Player"))
-                raw_foot = str(match.iloc[0].get("kicking_foot", match.iloc[0].get("pe_remate", "R"))).upper()
+                player_name = match.iloc[0].get("player", "Player")
+                raw_foot = str(match.iloc[0].get("kicking_foot", "R")).upper()
                 kicking_foot = "R" if raw_foot in ["R", "D"] else "L"
-                raw_dir = str(match.iloc[0].get("direction", match.iloc[0].get("direcao", "left"))).lower()
-                # Map direction to Kicker's perspective in English
-                if raw_dir in ["left", "esquerda"]:
-                    actual_dir_kicker = "RIGHT"
-                elif raw_dir in ["right", "direita"]:
-                    actual_dir_kicker = "LEFT"
-                else:
-                    actual_dir_kicker = "CENTER"
+                actual_direction = str(match.iloc[0].get("direction", "left")).upper()
 
         pose_csv = PROCESSED_DIR / f"{selected_clip}_pose.csv"
         if pose_csv.exists():
@@ -583,8 +615,8 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**Player:** `{player_name}`")
     st.sidebar.markdown(f"**Dominant Foot:** `{'Right (R)' if kicking_foot == 'R' else 'Left (L)'}`")
-    if actual_dir_kicker != "Unknown":
-        st.sidebar.markdown(f"**Actual Outcome:** `{actual_dir_kicker}`")
+    if actual_direction != "Unknown":
+        st.sidebar.markdown(f"**Actual Outcome:** `{actual_direction}`")
 
     if df_pose.empty or not video_to_show.exists():
         st.error("Pose data or video file unavailable.")
@@ -592,24 +624,24 @@ def main():
 
     # Prepare timeline predictions
     video_b64 = get_base64_video(video_to_show)
-    timeline_data, final_probs_kicker = build_timeline_predictions(
+    timeline_data, final_probs = build_timeline_predictions(
         selected_clip, df_pose, model, encoder, feature_names, kicking_foot
     )
 
     # 1. Main Live Synchronized Display
     st.subheader("1. Live Approach & Goal Reaction")
-    render_synchronized_player(video_b64, timeline_data, final_probs_kicker)
+    render_synchronized_player(video_b64, timeline_data, final_probs)
 
-    # 2. Biomechanical Cards Below the Goal
+    # 2. Biomechanical Cards Below the Goal (now with robust fallback)
     st.markdown("<br>", unsafe_allow_html=True)
     bio_metrics = compute_biomechanics_from_pose(df_pose)
 
     card1, card2, card3, card4 = st.columns(4)
     card1.metric("Pelvis Angle at Impact", f"{bio_metrics['pelvis_deg']:.1f}°")
     card2.metric("Trunk Torsion", f"{bio_metrics['torso_twist']:.1f}°")
-    pred_dir = max(final_probs_kicker, key=final_probs_kicker.get)
-    card3.metric("Terminal Prediction", pred_dir.upper())
-    card4.metric("Confidence Level", f"{final_probs_kicker[pred_dir]:.1%}")
+    card3.metric("Approach Angle", f"{bio_metrics['approach_angle']:.1f}°", f"{bio_metrics['approach_type']}")
+    pred_dir = max(final_probs, key=final_probs.get)
+    card4.metric("Predicted Target", pred_dir.upper(), f"{final_probs[pred_dir]:.1%} Conf.")
 
     # 3. Approach Progression Line Chart
     st.markdown("---")
@@ -620,7 +652,7 @@ def main():
         a = step ** 1.8
         p_step = {}
         for s in ["left", "center", "right"]:
-            p_step[s] = (1 - a) * 0.333 + a * final_probs_kicker[s]
+            p_step[s] = (1 - a) * 0.333 + a * final_probs[s]
         tot = sum(p_step.values())
         chart_points.append({
             "Approach (%)": int(step * 100),
