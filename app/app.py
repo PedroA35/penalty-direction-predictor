@@ -2,7 +2,7 @@
 Penalty Kick Direction Predictor - Interactive Dashboard
 Streamlit app with:
 - Live real-time video-goal synchronization
-- Custom video upload and on-the-fly pose extraction
+- Custom video upload with on-the-fly feature calculation and model inference
 - Biomechanical insight cards (Approach Angle, Pelvis Rotation, Trunk Torsion)
 """
 
@@ -68,8 +68,8 @@ def get_base64_video(video_path: Path) -> str:
     return base64.b64encode(video_bytes).decode("utf-8")
 
 
-def process_uploaded_video(uploaded_file, output_annotated: bool = True) -> tuple[pd.DataFrame, Path, Path]:
-    """Processes a newly uploaded video file: extracts pose keypoints and renders skeleton video."""
+def process_uploaded_video(uploaded_file) -> tuple[pd.DataFrame, Path, Path]:
+    """Processes an uploaded video file: extracts pose keypoints and renders skeleton video."""
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(uploaded_file.read())
     tfile.flush()
@@ -145,23 +145,76 @@ def process_uploaded_video(uploaded_file, output_annotated: bool = True) -> tupl
     return df_pose, raw_path, final_annotated
 
 
+def extract_features_from_pose_dataframe(df_pose: pd.DataFrame, kicking_foot: str) -> dict[str, float]:
+    """Computes full feature vector from raw pose dataframe for on-the-fly model prediction."""
+    clean_df = df_pose.interpolate(method="linear", limit_direction="both").bfill().ffill().fillna(0.0)
+    total_frames = len(clean_df)
+    if total_frames == 0:
+        return {}
+
+    row = clean_df.iloc[-1]
+    first_row = clean_df.iloc[0]
+
+    l_sh = (float(row.get("left_shoulder_x", 0)), float(row.get("left_shoulder_y", 0)))
+    r_sh = (float(row.get("right_shoulder_x", 0)), float(row.get("right_shoulder_y", 0)))
+    l_hip = (float(row.get("left_hip_x", 0)), float(row.get("left_hip_y", 0)))
+    r_hip = (float(row.get("right_hip_x", 0)), float(row.get("right_hip_y", 0)))
+    l_ank = (float(row.get("left_ankle_x", 0)), float(row.get("left_ankle_y", 0)))
+    r_ank = (float(row.get("right_ankle_x", 0)), float(row.get("right_ankle_y", 0)))
+
+    mid_sh = ((l_sh[0] + r_sh[0]) / 2.0, (l_sh[1] + r_sh[1]) / 2.0)
+    mid_hip = ((l_hip[0] + r_hip[0]) / 2.0, (l_hip[1] + r_hip[1]) / 2.0)
+
+    torso_len = np.sqrt((mid_sh[0] - mid_hip[0]) ** 2 + (mid_sh[1] - mid_hip[1]) ** 2)
+    if torso_len < 1e-4 or np.isnan(torso_len):
+        torso_len = 1.0
+
+    sh_deg = float(np.degrees(np.arctan2(r_sh[1] - l_sh[1], r_sh[0] - l_sh[0]))) if (r_sh[0] - l_sh[0]) != 0 else 0.0
+    hip_deg = float(np.degrees(np.arctan2(r_hip[1] - l_hip[1], r_hip[0] - l_hip[0]))) if (r_hip[0] - l_hip[0]) != 0 else 0.0
+    torso_twist = float(sh_deg - hip_deg)
+
+    start_hip_x = (float(first_row.get("left_hip_x", 0)) + float(first_row.get("right_hip_x", 0))) / 2.0
+    start_hip_y = (float(first_row.get("left_hip_y", 0)) + float(first_row.get("right_hip_y", 0))) / 2.0
+
+    dx_app = float(mid_hip[0] - start_hip_x)
+    dy_app = float(mid_hip[1] - start_hip_y)
+    app_angle = float(np.degrees(np.arctan2(dx_app, abs(dy_app) if abs(dy_app) > 1e-4 else 1.0)))
+
+    # Angular velocities
+    if total_frames >= 5:
+        old_row = clean_df.iloc[-5]
+        old_l_hip = (float(old_row.get("left_hip_x", 0)), float(old_row.get("left_hip_y", 0)))
+        old_r_hip = (float(old_row.get("right_hip_x", 0)), float(old_row.get("right_hip_y", 0)))
+        old_hip_deg = float(np.degrees(np.arctan2(old_r_hip[1] - old_l_hip[1], old_r_hip[0] - old_l_hip[0]))) if (old_r_hip[0] - old_l_hip[0]) != 0 else hip_deg
+        hip_velocity = hip_deg - old_hip_deg
+    else:
+        hip_velocity = 0.0
+
+    feat_dict = {
+        "shoulder_angle_last": sh_deg,
+        "hip_angle_last": hip_deg,
+        "torso_twist_last": torso_twist,
+        "ankle_distance_last": float(np.sqrt((l_ank[0] - r_ank[0]) ** 2 + (l_ank[1] - r_ank[1]) ** 2) / torso_len),
+        "hip_angular_velocity": float(hip_velocity),
+        "torso_twist_velocity": 0.0,
+        "approach_angle": float(app_angle),
+        "approach_lateral_drift": float(dx_app / torso_len),
+        "is_right_foot": 1 if kicking_foot.upper() in ["R", "RIGHT", "D"] else 0,
+        "pe_direito": 1 if kicking_foot.upper() in ["R", "RIGHT", "D"] else 0,
+    }
+    return feat_dict
+
+
 def compute_biomechanics_from_pose(df_pose: pd.DataFrame) -> dict[str, any]:
     """Computes physical metrics from pose series with robust NaN interpolation."""
     if df_pose.empty:
         return {"pelvis_deg": 0.0, "torso_twist": 0.0, "approach_angle": 0.0, "approach_type": "Direct"}
 
-    # Limpar NaNs por interpolação linear suave
     clean_df = df_pose.interpolate(method="linear", limit_direction="both").bfill().ffill().fillna(0.0)
 
-    # Filtrar apenas frames válidos com deteção
-    valid_rows = clean_df[clean_df["left_hip_x"].abs() > 1e-4]
-    if valid_rows.empty:
-        valid_rows = clean_df
+    first_row = clean_df.iloc[0]
+    last_row = clean_df.iloc[-1]
 
-    first_row = valid_rows.iloc[0]
-    last_row = valid_rows.iloc[-1]
-
-    # Angles at impact
     l_sh = (float(last_row.get("left_shoulder_x", 0)), float(last_row.get("left_shoulder_y", 0)))
     r_sh = (float(last_row.get("right_shoulder_x", 0)), float(last_row.get("right_shoulder_y", 0)))
     l_hip = (float(last_row.get("left_hip_x", 0)), float(last_row.get("left_hip_y", 0)))
@@ -169,10 +222,8 @@ def compute_biomechanics_from_pose(df_pose: pd.DataFrame) -> dict[str, any]:
 
     sh_deg = float(np.degrees(np.arctan2(r_sh[1] - l_sh[1], r_sh[0] - l_sh[0]))) if (r_sh[0] - l_sh[0]) != 0 else 0.0
     hip_deg = float(np.degrees(np.arctan2(r_hip[1] - l_hip[1], r_hip[0] - l_hip[0]))) if (r_hip[0] - l_hip[0]) != 0 else 0.0
-
     torso_twist = float(sh_deg - hip_deg)
 
-    # Approach Vector: Start of run-up to stance foot contact
     start_hip_x = (float(first_row.get("left_hip_x", 0)) + float(first_row.get("right_hip_x", 0))) / 2.0
     start_hip_y = (float(first_row.get("left_hip_y", 0)) + float(first_row.get("right_hip_y", 0))) / 2.0
 
@@ -181,18 +232,12 @@ def compute_biomechanics_from_pose(df_pose: pd.DataFrame) -> dict[str, any]:
 
     dx = float(end_hip_x - start_hip_x)
     dy = float(end_hip_y - start_hip_y)
-
     app_angle = float(np.degrees(np.arctan2(dx, abs(dy) if abs(dy) > 1e-4 else 1.0)))
 
-    # Fallback para evitar NaN em casos extremos
-    if np.isnan(hip_deg):
-        hip_deg = 0.0
-    if np.isnan(torso_twist):
-        torso_twist = 0.0
-    if np.isnan(app_angle):
-        app_angle = 0.0
+    if np.isnan(hip_deg): hip_deg = 0.0
+    if np.isnan(torso_twist): torso_twist = 0.0
+    if np.isnan(app_angle): app_angle = 0.0
 
-    # Classification
     abs_angle = abs(app_angle)
     if abs_angle > 28:
         app_type = "Wide Arc"
@@ -214,31 +259,47 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
     total_frames = len(df_pose)
     duration = total_frames / 30.0
 
-    features_df_path = PROCESSED_DIR / "dataset_features.csv"
     final_probs = {"left": 0.33, "center": 0.33, "right": 0.34}
 
-    if model is not None and features_df_path.exists():
-        ds_df = pd.read_csv(features_df_path)
-        clip_rows = ds_df[(ds_df["clip_id"] == selected_clip) & (ds_df["fraction"] == 1.0)]
-        if clip_rows.empty:
-            clip_rows = ds_df[ds_df["clip_id"] == selected_clip]
+    if model is not None:
+        features_df_path = PROCESSED_DIR / "dataset_features.csv"
+        found_in_dataset = False
 
-        if not clip_rows.empty:
-            sample_row = clip_rows.iloc[[0]].copy()
-            sample_row["is_right_foot"] = 1 if kicking_foot.upper() == "R" else 0
+        if features_df_path.exists() and selected_clip != "uploaded":
+            ds_df = pd.read_csv(features_df_path)
+            clip_rows = ds_df[(ds_df["clip_id"] == selected_clip) & (ds_df["fraction"] == 1.0)]
+            if not clip_rows.empty:
+                found_in_dataset = True
+                sample_row = clip_rows.iloc[[0]].copy()
+                sample_row["is_right_foot"] = 1 if kicking_foot.upper() in ["R", "RIGHT", "D"] else 0
+                sample_row["pe_direito"] = 1 if kicking_foot.upper() in ["R", "RIGHT", "D"] else 0
 
-            X_input = pd.DataFrame(index=sample_row.index)
+                X_input = pd.DataFrame(index=sample_row.index)
+                for col in feature_names:
+                    if col in sample_row.columns:
+                        X_input[col] = sample_row[col].values
+                    else:
+                        X_input[col] = 0.0
+
+                prob_raw = model.predict_proba(X_input)[0]
+                raw_dict = {cls_name: float(p) for cls_name, p in zip(encoder.classes_, prob_raw)}
+                final_probs = {
+                    "left": raw_dict.get("left", 0.33),
+                    "center": raw_dict.get("center", 0.33),
+                    "right": raw_dict.get("right", 0.34),
+                }
+
+        # SE FOR UM VÍDEO NOVO (UPLOAD): Extrair atributos na hora e fazer previsão ao vivo!
+        if not found_in_dataset:
+            live_features = extract_features_from_pose_dataframe(df_pose, kicking_foot)
+            X_live = pd.DataFrame([live_features])
             for col in feature_names:
-                if col in sample_row.columns:
-                    X_input[col] = sample_row[col].values
-                elif col in ["is_right_foot", "pe_direito"]:
-                    X_input[col] = 1 if kicking_foot.upper() == "R" else 0
-                else:
-                    X_input[col] = 0.0
+                if col not in X_live.columns:
+                    X_live[col] = 0.0
+            X_live = X_live[feature_names]
 
-            prob_raw = model.predict_proba(X_input)[0]
+            prob_raw = model.predict_proba(X_live)[0]
             raw_dict = {cls_name: float(p) for cls_name, p in zip(encoder.classes_, prob_raw)}
-
             final_probs = {
                 "left": raw_dict.get("left", 0.33),
                 "center": raw_dict.get("center", 0.33),
@@ -632,7 +693,7 @@ def main():
     st.subheader("1. Live Approach & Goal Reaction")
     render_synchronized_player(video_b64, timeline_data, final_probs)
 
-    # 2. Biomechanical Cards Below the Goal (now with robust fallback)
+    # 2. Biomechanical Cards Below the Goal (now with Approach Run Angle)
     st.markdown("<br>", unsafe_allow_html=True)
     bio_metrics = compute_biomechanics_from_pose(df_pose)
 
