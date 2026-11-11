@@ -1,0 +1,25 @@
+# Ambientes virtuais
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Dados e ficheiros multimédia (NUNCA enviar vídeos para o GitHub)
+data/raw/
+data/clips/
+data/processed/*.parquet
+data/processed/*.csv
+!data/labels.csv
+
+# Modelos treinados e checkpoints
+models/*.pkl
+models/*.joblib
+models/*.pt
+models/*.onnx
+
+# Ficheiros de sistema e IDEs
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
