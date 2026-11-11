@@ -1,6 +1,8 @@
 # Penalty Kick Direction Predictor (Pose-Based)
 
-Predicting football penalty kick direction (left / center / right, from the goalkeeper's perspective) based on pre-contact body posture and biomechanics.
+Predicting football penalty kick direction (left / center / right, from the kicker's perspective) based on pre-contact body posture and biomechanics.
+
+![Dashboard Preview](assets/demo.png)
 
 ---
 
@@ -17,7 +19,18 @@ This project employs a lightweight, interpretable biomechanical framework:
 
 ---
 
-## 2. Biomechanical Features
+## 2. Interactive Dashboard Features
+
+The web dashboard (`app/app.py`) provides real-time inference and visualization:
+
+* **Synchronized Video & Goal Reaction:** As the run-up video plays, the interactive goal graphic updates probability bars and confidence levels in real time.
+* **Kicker's Perspective:** Intuitive left-center-right orientation matching the shooter's frame of reference.
+* **On-the-Fly Video Upload:** Upload any penalty kick MP4 clip to automatically extract skeletal keypoints and predict direction before impact.
+* **Biomechanical Metrics:** Direct readout of pelvis opening angle, trunk twist, and model confidence at stance-foot contact.
+
+---
+
+## 3. Biomechanical Features
 
 The feature extractor translates raw $(x, y)$ coordinate streams into domain-relevant physical metrics:
 
@@ -29,14 +42,16 @@ The feature extractor translates raw $(x, y)$ coordinate streams into domain-rel
 
 ---
 
-## 3. Repository Structure
+## 4. Repository Structure
 
 ```text
-PENALTY-ANALYSIS/
+penalty-direction-predictor/
 ├── .gitignore
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
+├── assets/
+│   └── demo.png             # Dashboard preview screenshot
 ├── data/
 │   ├── labels.csv           # Annotation metadata (clip_id, player, foot, direction)
 │   ├── raw/                 # Source raw footage (excluded from version control)
@@ -49,12 +64,12 @@ PENALTY-ANALYSIS/
 │   ├── features.py          # Biomechanical feature engineering and temporal slicing
 │   └── train.py             # GroupKFold validation and model training
 └── app/
-    └── app.py               # Interactive inference dashboard
+    └── app.py               # Interactive Streamlit dashboard
 ```
 
 ---
 
-## 4. Getting Started
+## 5. Getting Started
 
 ### Prerequisites
 
@@ -74,9 +89,15 @@ source .venv/Scripts/activate  # On Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Launch Interactive Dashboard
+
+```bash
+streamlit run app/app.py
+```
+
 ---
 
-## 5. Workflow
+## 6. Workflow
 
 ### Step 1: Clip Annotations
 
@@ -122,9 +143,8 @@ Runs player-grouped cross-validation (`StratifiedGroupKFold`), benchmarks agains
 
 ---
 
-## 6. Evaluation Methodology and Limitations
+## 7. Evaluation Methodology and Limitations
 
 * **Player Leakage Prevention:** Standard random splits produce artificially inflated scores because a model can memorize a player's individual running signature. By evaluating exclusively with `GroupKFold` grouped by player, all evaluation folds test on athletes unseen during training.
 * **Baseline Comparison:** In small or unbalanced datasets (such as penalty shootouts where goalkeepers or takers favor one side), a trivial model predicting the majority class can achieve deceptive accuracy. Comparing model performance directly against this baseline is mandatory.
 * **Sample Size Considerations:** Initial prototype results on small datasets serve primarily to validate feature quality and tracking stability. Ongoing work focuses on expanding the dataset to 300+ penalty instances across multiple competitions to improve generalization across varied kicking styles.
-
