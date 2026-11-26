@@ -108,18 +108,23 @@ source .venv/Scripts/activate  # On Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Run Automated Unit Tests
+### Quick Task Commands (Makefile & Python Runner)
 
-Run the test suite to verify geometric calculations, trajectory smoothing filters, and feature extractors:
+The project provides modular CLI targets via `Makefile` (or cross-platform `python run.py`):
 
-```bash
-pytest
-```
+| Task | Make Command | Python CLI Alternative | Description |
+| :--- | :--- | :--- | :--- |
+| **Train Models** | `make train` | `python run.py train` | Run cross-validation benchmark and export top model |
+| **Run Tests** | `make test` | `python run.py test` | Run automated pytest test suite |
+| **Launch App** | `make app` | `python run.py app` | Launch interactive Streamlit dashboard |
+| **Extract Features** | `make features` | `python run.py features` | Compute biomechanical features & trajectory smoothing |
+| **Clean Cache** | `make clean` | `python run.py clean` | Remove temporary `__pycache__` and `.pytest_cache` |
+| **Complete Pipeline** | `make all` | `python run.py all` | Run features -> train -> test sequentially |
 
 ### Launch Interactive Dashboard
 
 ```bash
-streamlit run app/app.py
+make app  # Or: streamlit run app/app.py
 ```
 
 ---
@@ -187,13 +192,13 @@ To assess real-world generalizability and prevent identity memorization, the mod
 
 Five distinct classifier architectures were benchmarked under identical cross-validation folds:
 
-| Model Candidate | Mean Accuracy | Gain vs Baseline | Status |
-| :--- | :---: | :---: | :---: |
+| Model Candidate                          |  Mean Accuracy  | Gain vs Baseline |          Status          |
+| :--------------------------------------- | :-------------: | :--------------: | :----------------------: |
 | **Gradient Boosting (Stochastic)** | **71.5%** | **+29.2%** | **Champion Model** |
-| Support Vector Machine (RBF) | 63.1% | +20.8% | Strong Runner-up |
-| Random Forest (Balanced) | 60.0% | +17.7% | Evaluated |
-| Logistic Regression (L2) | 48.5% | +6.2% | Linear Baseline |
-| Majority-Class Baseline | 42.3% | +0.0% | Zero-Rule Baseline |
+| Support Vector Machine (RBF)             |      63.1%      |      +20.8%      |     Strong Runner-up     |
+| Random Forest (Balanced)                 |      60.0%      |      +17.7%      |        Evaluated        |
+| Logistic Regression (L2)                 |      48.5%      |      +6.2%      |     Linear Baseline     |
+| Majority-Class Baseline                  |      42.3%      |      +0.0%      |    Zero-Rule Baseline    |
 
 With the introduction of Savitzky-Golay trajectory smoothing and lateral trunk tilt kinematics, **Gradient Boosting emerged as the top-performing model with 71.5% mean accuracy** (+29.2 percentage points over baseline). Removing high-frequency pixel jitter stabilized angular velocity derivatives, allowing tree-based boosting to identify decisive non-linear thresholds in dynamic pelvic rotation and trunk lean without overfitting.
 
@@ -213,24 +218,23 @@ Precision           93.3%     69.0%     68.4%
 
 #### Detailed Per-Class Metrics
 
-| Target Class | Precision | Recall | F1-Score | Support |
-| :--- | :---: | :---: | :---: | :---: |
-| **CENTER** | **0.93** | 0.64 | **0.78** | 22 |
-| **LEFT** | 0.69 | **0.74** | 0.71 | 54 |
-| **RIGHT** | 0.68 | 0.72 | 0.70 | 54 |
-| **Overall Accuracy** | | | **0.71** | 130 |
-| **Macro Average** | **0.77** | 0.70 | **0.73** | 130 |
-| **Weighted Average** | 0.73 | 0.71 | 0.72 | 130 |
+| Target Class               |   Precision   |     Recall     |    F1-Score    | Support |
+| :------------------------- | :------------: | :------------: | :------------: | :-----: |
+| **CENTER**           | **0.93** |      0.64      | **0.78** |   22   |
+| **LEFT**             |      0.69      | **0.74** |      0.71      |   54   |
+| **RIGHT**            |      0.68      |      0.72      |      0.70      |   54   |
+| **Overall Accuracy** |                |                | **0.71** |   130   |
+| **Macro Average**    | **0.77** |      0.70      | **0.73** |   130   |
+| **Weighted Average** |      0.73      |      0.71      |      0.72      |   130   |
 
 ### Biomechanical Findings and Discussion
 
 1. **Breakthrough in Central Penalty Prediction:**
    The combination of trajectory smoothing and lateral trunk tilt features unlocked a major predictive breakthrough for central penalties. Rather than being split 50/50, the model correctly identified **14 out of 22 central penalties (63.6% recall)** with an outstanding **93.3% precision** (only 1 false positive across all unseen player folds). A stabilized vertical trunk posture with reduced lateral lean serves as a definitive physical signature for central strikes.
-
 2. **Balanced Lateral Discrimination:**
    Predictions for Left and Right shots remain tightly balanced and robust, achieving **74.1% recall** on Left shots and **72.2% recall** on Right shots on athletes unseen during training.
-
 3. **Top Physics-Informed Predictors:**
+
    * **Hip Angular Velocity (`hip_angular_velocity` - 10.1%):** Rate of pelvic rotation in the final approach window is the single strongest physical differentiator.
    * **Approach Lateral Drift (`approach_lateral_drift` - 5.1%):** Lateral displacement of the kicker's center of mass relative to trunk length.
    * **Mean Terminal Lateral Tilt (`abs_lateral_trunk_tilt_mean_end` - 4.7%):** Magnitude of trunk lean away from the vertical axis prior to impact.
