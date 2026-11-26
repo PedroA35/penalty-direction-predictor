@@ -10,9 +10,7 @@ import numpy as np
 import pandas as pd
 
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-PROCESSED_DIR = DATA_DIR / "processed"
-LABELS_PATH = DATA_DIR / "labels.csv"
+from src.config import DATA_DIR, PROCESSED_DIR, LABELS_PATH, MIN_KEYPOINT_CONFIDENCE, SMOOTHING_WINDOW_LENGTH
 
 
 def calculate_angle_2d(p1: tuple[float, float], p2: tuple[float, float]) -> float:
@@ -39,10 +37,10 @@ def calculate_joint_angle(a: tuple[float, float], b: tuple[float, float], c: tup
     return float(np.degrees(np.arccos(cosine_angle)))
 
 
-def smooth_trajectories(df_pose: pd.DataFrame, window_length: int = 5) -> pd.DataFrame:
+def smooth_trajectories(df_pose: pd.DataFrame, window_length: int = SMOOTHING_WINDOW_LENGTH) -> pd.DataFrame:
     """
     Applies biomechanical trajectory smoothing to keypoint coordinates.
-    1. Low-confidence (< 0.25) or (0,0) coordinates are masked as NaN.
+    1. Low-confidence (< MIN_KEYPOINT_CONFIDENCE) or (0,0) coordinates are masked as NaN.
     2. Linear interpolation and forward/backward fill restore missing/occluded frames.
     3. Savitzky-Golay (or weighted rolling filter) eliminates high-frequency pixel jitter
        without damping genuine physical accelerations.
@@ -55,12 +53,12 @@ def smooth_trajectories(df_pose: pd.DataFrame, window_length: int = 5) -> pd.Dat
     if not coord_cols or len(df_clean) < 3:
         return df_clean
 
-    # Mask low confidence (< 0.25) or (0, 0) coordinates as NaN
+    # Mask low confidence or (0, 0) coordinates as NaN
     for col in coord_cols:
         base_name = col.rsplit("_", 1)[0]
         conf_col = f"{base_name}_conf"
         if conf_col in df_clean.columns:
-            low_conf = df_clean[conf_col] < 0.25
+            low_conf = df_clean[conf_col] < MIN_KEYPOINT_CONFIDENCE
             df_clean.loc[low_conf, col] = np.nan
         df_clean.loc[df_clean[col] == 0, col] = np.nan
 

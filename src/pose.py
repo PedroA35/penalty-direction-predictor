@@ -12,22 +12,7 @@ import pandas as pd
 from ultralytics import YOLO
 
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-CLIPS_DIR = DATA_DIR / "clips"
-PROCESSED_DIR = DATA_DIR / "processed"
-
-# COCO 17 keypoint names
-KEYPOINT_NAMES = [
-    "nose",
-    "left_eye", "right_eye",
-    "left_ear", "right_ear",
-    "left_shoulder", "right_shoulder",
-    "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist",
-    "left_hip", "right_hip",
-    "left_knee", "right_knee",
-    "left_ankle", "right_ankle"
-]
+from src.config import DATA_DIR, CLIPS_DIR, PROCESSED_DIR, KEYPOINT_NAMES, POSE_MODEL_NAME
 
 
 def extract_pose_from_clip(clip_path: Path, output_video: bool = True, force: bool = False) -> pd.DataFrame:
@@ -47,7 +32,7 @@ def extract_pose_from_clip(clip_path: Path, output_video: bool = True, force: bo
 
     print(f"\n[EXTRACTING] Processing {clip_path.name}...")
 
-    model = YOLO("yolov8n-pose.pt")
+    model = YOLO(POSE_MODEL_NAME)
     cap = cv2.VideoCapture(str(clip_path))
     if not cap.isOpened():
         print(f"[ERROR] Could not open video: {clip_path}")

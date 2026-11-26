@@ -26,19 +26,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from src.features import generate_clip_summary_features
-DATA_DIR = BASE_DIR / "data"
-CLIPS_DIR = DATA_DIR / "clips"
-PROCESSED_DIR = DATA_DIR / "processed"
-MODELS_DIR = BASE_DIR / "models"
-LABELS_PATH = DATA_DIR / "labels.csv"
-
-# COCO keypoint names
-KEYPOINT_NAMES = [
-    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
-    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist", "left_hip", "right_hip",
-    "left_knee", "right_knee", "left_ankle", "right_ankle"
-]
+from src.config import DATA_DIR, CLIPS_DIR, PROCESSED_DIR, MODELS_DIR, LABELS_PATH, KEYPOINT_NAMES, POSE_MODEL_NAME
 
 
 @st.cache_resource
@@ -78,7 +66,7 @@ def process_uploaded_video(uploaded_file) -> tuple[pd.DataFrame, Path, Path]:
 
     annotated_path = raw_path.with_name(f"{raw_path.stem}_annotated.mp4")
 
-    model = YOLO("yolov8n-pose.pt")
+    model = YOLO(POSE_MODEL_NAME)
     cap = cv2.VideoCapture(str(raw_path))
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

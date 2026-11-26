@@ -68,12 +68,16 @@ penalty-direction-predictor/
 │   └── processed/           # Extracted joint coordinates and feature datasets
 ├── src/
 │   ├── __init__.py
+│   ├── config.py            # Central configuration and filesystem constants
 │   ├── download.py          # Video segmentation utility
 │   ├── pose.py              # Pose extraction and visual skeleton verification
-│   ├── features.py          # Biomechanical feature engineering and temporal slicing
+│   ├── features.py          # Biomechanical feature engineering and trajectory smoothing
 │   └── train.py             # GroupKFold validation and multi-model benchmarking
+├── tests/
+│   ├── __init__.py
+│   └── test_features.py     # Automated unit tests for geometry, filters, and features
 ├── models/
-│   ├── penalty_model.joblib # Winning trained classifier (e.g., SVM RBF)
+│   ├── penalty_model.joblib # Winning trained classifier (e.g., Gradient Boosting)
 │   ├── scaler.joblib        # Fitted StandardScaler
 │   ├── label_encoder.joblib # Direction class label encoder
 │   ├── feature_names.joblib # Feature schema
@@ -102,6 +106,14 @@ cd penalty-direction-predictor
 python -m venv .venv
 source .venv/Scripts/activate  # On Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+### Run Automated Unit Tests
+
+Run the test suite to verify geometric calculations, trajectory smoothing filters, and feature extractors:
+
+```bash
+pytest
 ```
 
 ### Launch Interactive Dashboard
