@@ -175,15 +175,15 @@ To assess real-world generalizability and prevent identity memorization, the mod
 
 Five distinct classifier architectures were benchmarked under identical cross-validation folds:
 
-| Model Candidate                        |  Mean Accuracy  | Gain vs Baseline |          Status          |
-| :------------------------------------- | :-------------: | :--------------: | :----------------------: |
-| **Support Vector Machine (RBF)** | **63.8%** | **+21.5%** | **Champion Model** |
-| Gradient Boosting (Stochastic)         |      59.2%      |      +16.9%      |        Runner-up        |
-| Random Forest (Balanced)               |      56.9%      |      +14.6%      |        Evaluated        |
-| Logistic Regression (L2)               |      43.1%      |      +0.8%      |     Linear Baseline     |
-| Majority-Class Baseline                |      42.3%      |      +0.0%      |    Zero-Rule Baseline    |
+| Model Candidate | Mean Accuracy | Gain vs Baseline | Status |
+| :--- | :---: | :---: | :---: |
+| **Gradient Boosting (Stochastic)** | **71.5%** | **+29.2%** | **Champion Model** |
+| Support Vector Machine (RBF) | 63.1% | +20.8% | Strong Runner-up |
+| Random Forest (Balanced) | 60.0% | +17.7% | Evaluated |
+| Logistic Regression (L2) | 48.5% | +6.2% | Linear Baseline |
+| Majority-Class Baseline | 42.3% | +0.0% | Zero-Rule Baseline |
 
-The non-linear **Support Vector Machine with RBF kernel** achieved the highest cross-validation score (**63.8% mean accuracy**), outperforming the naive majority baseline by **+21.5 percentage points**. The RBF kernel effectively maps non-linear interactions between pelvic opening angles, trunk torsion, and stance foot placement into separable decision spaces.
+With the introduction of Savitzky-Golay trajectory smoothing and lateral trunk tilt kinematics, **Gradient Boosting emerged as the top-performing model with 71.5% mean accuracy** (+29.2 percentage points over baseline). Removing high-frequency pixel jitter stabilized angular velocity derivatives, allowing tree-based boosting to identify decisive non-linear thresholds in dynamic pelvic rotation and trunk lean without overfitting.
 
 ### Out-of-Fold Confusion Matrix
 
@@ -192,35 +192,38 @@ The following confusion matrix compiles all predictions made strictly on unseen 
 ```text
 Actual \ Pred      CENTER      LEFT     RIGHT      Recall
 ---------------------------------------------------------
-CENTER                  1        10        11        4.5%
-LEFT                    0        41        13       75.9%
-RIGHT                   0        13        41       75.9%
+CENTER                 14         4         4       63.6%
+LEFT                    0        40        14       74.1%
+RIGHT                   1        14        39       72.2%
 ---------------------------------------------------------
-Precision          100.0%     64.1%     63.1%
+Precision           93.3%     69.0%     68.4%
 ```
 
 #### Detailed Per-Class Metrics
 
-| Target Class               |   Precision   |     Recall     |    F1-Score    | Support |
-| :------------------------- | :------------: | :------------: | :------------: | :-----: |
-| **CENTER**           | **1.00** |      0.05      |      0.09      |   22   |
-| **LEFT**             |      0.64      | **0.76** |      0.70      |   54   |
-| **RIGHT**            |      0.63      | **0.76** |      0.69      |   54   |
-| **Overall Accuracy** |                |                | **0.64** |   130   |
-| **Macro Average**    | **0.76** |      0.52      |      0.49      |   130   |
-| **Weighted Average** |      0.70      |      0.64      |      0.60      |   130   |
+| Target Class | Precision | Recall | F1-Score | Support |
+| :--- | :---: | :---: | :---: | :---: |
+| **CENTER** | **0.93** | 0.64 | **0.78** | 22 |
+| **LEFT** | 0.69 | **0.74** | 0.71 | 54 |
+| **RIGHT** | 0.68 | 0.72 | 0.70 | 54 |
+| **Overall Accuracy** | | | **0.71** | 130 |
+| **Macro Average** | **0.77** | 0.70 | **0.73** | 130 |
+| **Weighted Average** | 0.73 | 0.71 | 0.72 | 130 |
 
 ### Biomechanical Findings and Discussion
 
-1. **Symmetric Lateral Discrimination:**
-   The model exhibits balanced predictive power for lateral kicks, achieving an identical **75.9% recall** on both Left and Right shots (41/54 correct predictions for each side). This confirms that physical kinematics (such as stance foot offset, hip opening angle, and torso counter-rotation) form a consistent, reliable directional signature prior to ball impact.
-2. **The "Center" Penalty Dilemma (Deceptive Run-Ups):**
-   Predicting kicks directed down the center represents a known biomechanical challenge. Penalty takers aiming centrally typically employ deceptive run-ups and postpone directional cues until the final milliseconds of foot-ball contact. Furthermore, because a kicker's swinging leg inherently produces lateral momentum (e.g., a right-footed player swinging forward naturally imparts an angular trajectory), pre-impact body posture is naturally split between left and right indicators (10 vs. 11 misclassifications). By employing Bayes-adjusted thresholding, the model avoids aggressive false alarms on the center class, preserving **100% precision** when a center prediction is triggered.
-3. **Key Biomechanical Predictors:**
+1. **Breakthrough in Central Penalty Prediction:**
+   The combination of trajectory smoothing and lateral trunk tilt features unlocked a major predictive breakthrough for central penalties. Rather than being split 50/50, the model correctly identified **14 out of 22 central penalties (63.6% recall)** with an outstanding **93.3% precision** (only 1 false positive across all unseen player folds). A stabilized vertical trunk posture with reduced lateral lean serves as a definitive physical signature for central strikes.
 
-   * **Stance Foot Positioning (`offset_x`, `offset_y`):** The lateral and longitudinal placement of the supporting foot relative to the hip center serves as an anchor for the kicker's center of mass.
-   * **Stance Knee Flexion (`stance_knee_flex`):** Degree of knee flexion dictates how low the player's hips drop to generate lift or cut across the ball.
-   * **Pelvic Opening & Trunk Twist:** The coordination between the pelvis line and shoulder line indicates whether the hips are opening early to direct the ball across the body.
+2. **Balanced Lateral Discrimination:**
+   Predictions for Left and Right shots remain tightly balanced and robust, achieving **74.1% recall** on Left shots and **72.2% recall** on Right shots on athletes unseen during training.
+
+3. **Top Physics-Informed Predictors:**
+   * **Hip Angular Velocity (`hip_angular_velocity` - 10.1%):** Rate of pelvic rotation in the final approach window is the single strongest physical differentiator.
+   * **Approach Lateral Drift (`approach_lateral_drift` - 5.1%):** Lateral displacement of the kicker's center of mass relative to trunk length.
+   * **Mean Terminal Lateral Tilt (`abs_lateral_trunk_tilt_mean_end` - 4.7%):** Magnitude of trunk lean away from the vertical axis prior to impact.
+   * **Tilt-Pelvis Interaction (`tilt_pelvis_interaction` - 4.6%):** Kinetic coupling between coronal trunk inclination and transversal pelvic rotation.
+   * **Terminal Knee Distance (`knee_distance_last` - 4.1%):** Inter-knee base spread at plant foot touchdown.
 
 ---
 

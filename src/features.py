@@ -1,6 +1,6 @@
 """
 Biomechanical Feature Engineering Module with:
-- Approach Run-Up Angle and Trajectory Linearity
+- Physics-Informed Kinematic Interactions (Approach Angle x Pelvis Rotation)
 - Angular velocities (rate of change of pelvis and torso twist prior to impact)
 - Virtual Biomechanical Mirroring (flips kinematics to balance right/left footed takers)
 """
@@ -39,6 +39,53 @@ def calculate_joint_angle(a: tuple[float, float], b: tuple[float, float], c: tup
     return float(np.degrees(np.arccos(cosine_angle)))
 
 
+def smooth_trajectories(df_pose: pd.DataFrame, window_length: int = 5) -> pd.DataFrame:
+    """
+    Applies biomechanical trajectory smoothing to keypoint coordinates.
+    1. Low-confidence (< 0.25) or (0,0) coordinates are masked as NaN.
+    2. Linear interpolation and forward/backward fill restore missing/occluded frames.
+    3. Savitzky-Golay (or weighted rolling filter) eliminates high-frequency pixel jitter
+       without damping genuine physical accelerations.
+    """
+    if df_pose is None or len(df_pose) == 0:
+        return df_pose
+
+    df_clean = df_pose.copy()
+    coord_cols = [c for c in df_clean.columns if c.endswith("_x") or c.endswith("_y")]
+    if not coord_cols or len(df_clean) < 3:
+        return df_clean
+
+    # Mask low confidence (< 0.25) or (0, 0) coordinates as NaN
+    for col in coord_cols:
+        base_name = col.rsplit("_", 1)[0]
+        conf_col = f"{base_name}_conf"
+        if conf_col in df_clean.columns:
+            low_conf = df_clean[conf_col] < 0.25
+            df_clean.loc[low_conf, col] = np.nan
+        df_clean.loc[df_clean[col] == 0, col] = np.nan
+
+    # Interpolate temporal gaps smoothly
+    df_clean[coord_cols] = df_clean[coord_cols].interpolate(method="linear", limit_direction="both").bfill().ffill()
+
+    # Apply Savitzky-Golay filter (standard in sports biomechanics) or moving average fallback
+    n_frames = len(df_clean)
+    effective_window = min(window_length, n_frames if n_frames % 2 != 0 else n_frames - 1)
+
+    if effective_window >= 3:
+        try:
+            from scipy.signal import savgol_filter
+            poly = 2 if effective_window >= 4 else 1
+            for col in coord_cols:
+                vals = df_clean[col].values
+                if not np.all(np.isnan(vals)):
+                    df_clean[col] = savgol_filter(vals, window_length=effective_window, polyorder=poly)
+        except Exception:
+            for col in coord_cols:
+                df_clean[col] = df_clean[col].rolling(window=3, min_periods=1, center=True).mean()
+
+    return df_clean
+
+
 def extract_frame_features(row: pd.Series) -> dict[str, float]:
     """Calculates scale-normalized biomechanical indicators for a single frame."""
     l_shoulder = (row.get("left_shoulder_x", np.nan), row.get("left_shoulder_y", np.nan))
@@ -62,6 +109,12 @@ def extract_frame_features(row: pd.Series) -> dict[str, float]:
     torso_angle = calculate_angle_2d(mid_hip, mid_shoulder)
     torso_twist = shoulder_angle - hip_angle
 
+    # Lateral trunk tilt: angle of spine with vertical axis in coronal view (dy < 0 in screen coords)
+    dx_spine = mid_shoulder[0] - mid_hip[0]
+    dy_spine = mid_shoulder[1] - mid_hip[1]
+    lateral_trunk_tilt = float(np.degrees(np.arctan2(dx_spine, -dy_spine if abs(dy_spine) > 1e-4 else 1.0)))
+    abs_lateral_trunk_tilt = float(abs(lateral_trunk_tilt))
+
     l_knee_flex = calculate_joint_angle(l_hip, l_knee, l_ankle)
     r_knee_flex = calculate_joint_angle(r_hip, r_knee, r_ankle)
 
@@ -70,32 +123,43 @@ def extract_frame_features(row: pd.Series) -> dict[str, float]:
 
     l_foot_rel_x = (l_ankle[0] - mid_hip[0]) / torso_length
     r_foot_rel_x = (r_ankle[0] - mid_hip[0]) / torso_length
+    l_foot_rel_y = (l_ankle[1] - mid_hip[1]) / torso_length
+    r_foot_rel_y = (r_ankle[1] - mid_hip[1]) / torso_length
+    foot_y_diff = (l_ankle[1] - r_ankle[1]) / torso_length
 
     return {
         "shoulder_angle": shoulder_angle,
         "hip_angle": hip_angle,
         "torso_angle": torso_angle,
         "torso_twist": torso_twist,
+        "lateral_trunk_tilt": lateral_trunk_tilt,
+        "abs_lateral_trunk_tilt": abs_lateral_trunk_tilt,
         "l_knee_flex": l_knee_flex,
         "r_knee_flex": r_knee_flex,
         "ankle_distance": ankle_distance,
         "knee_distance": knee_distance,
         "l_foot_rel_x": l_foot_rel_x,
         "r_foot_rel_x": r_foot_rel_x,
+        "l_foot_rel_y": l_foot_rel_y,
+        "r_foot_rel_y": r_foot_rel_y,
+        "foot_y_diff": foot_y_diff,
         "mid_hip_x": mid_hip[0],
         "mid_hip_y": mid_hip[1],
         "torso_length": torso_length
     }
 
 
-def generate_clip_summary_features(df_pose: pd.DataFrame, fraction: float = 1.0) -> dict[str, float]:
-    """Aggregates kinematic features, angular velocities, and run-up approach trajectory."""
+def generate_clip_summary_features(df_pose: pd.DataFrame, fraction: float = 1.0, kicking_foot: str = "R") -> dict[str, float]:
+    """Aggregates kinematic features, angular velocities, physical interaction features, and stance foot metrics."""
     total_frames = len(df_pose)
     if total_frames == 0:
         return {}
 
     cutoff = max(1, int(total_frames * fraction))
     sub_df = df_pose.iloc[:cutoff].copy()
+
+    # Apply biomechanical trajectory smoothing to keypoint coordinates
+    sub_df = smooth_trajectories(sub_df)
 
     frame_features = [extract_frame_features(row) for _, row in sub_df.iterrows()]
     df_feat = pd.DataFrame(frame_features)
@@ -114,16 +178,19 @@ def generate_clip_summary_features(df_pose: pd.DataFrame, fraction: float = 1.0)
             summary[f"{col}_mean_end"] = float(tail_window[col].mean())
             summary[f"{col}_std_end"] = float(tail_window[col].std(ddof=0))
 
-    # 1. Velocidade Angular nos últimos 5 frames
+    # 1. Velocidades Angulares nos últimos 5 frames
     if len(df_feat) >= 5:
         hip_velocity = float(df_feat["hip_angle"].iloc[-1] - df_feat["hip_angle"].iloc[-5])
         torso_twist_velocity = float(df_feat["torso_twist"].iloc[-1] - df_feat["torso_twist"].iloc[-5])
+        lateral_tilt_velocity = float(df_feat["lateral_trunk_tilt"].iloc[-1] - df_feat["lateral_trunk_tilt"].iloc[-5])
     else:
         hip_velocity = 0.0
         torso_twist_velocity = 0.0
+        lateral_tilt_velocity = 0.0
 
     summary["hip_angular_velocity"] = hip_velocity
     summary["torso_twist_velocity"] = torso_twist_velocity
+    summary["lateral_tilt_velocity"] = lateral_tilt_velocity
 
     # 2. Ângulo e Trajetória de Aproximação (Run-Up Vector)
     start_hip = (df_feat["mid_hip_x"].iloc[0], df_feat["mid_hip_y"].iloc[0])
@@ -132,13 +199,50 @@ def generate_clip_summary_features(df_pose: pd.DataFrame, fraction: float = 1.0)
     dx_approach = float(end_hip[0] - start_hip[0])
     dy_approach = float(end_hip[1] - start_hip[1])
 
-    # Ângulo relativo ao eixo de avanço em direção à baliza
     approach_angle = float(np.degrees(np.arctan2(dx_approach, abs(dy_approach) if abs(dy_approach) > 1e-4 else 1.0)))
     summary["approach_angle"] = approach_angle
 
-    # Deslocamento horizontal normalizado da corrida
     avg_torso = float(df_feat["torso_length"].mean()) if "torso_length" in df_feat.columns else 1.0
     summary["approach_lateral_drift"] = float(dx_approach / (avg_torso if avg_torso > 1e-4 else 1.0))
+
+    # 3. INTERAÇÕES FÍSICAS (Physics-Informed Features)
+    summary["kinematic_momentum"] = float(approach_angle * summary["hip_angle_last"]) / 100.0
+    summary["pelvis_torso_coordination"] = float(summary["hip_angle_last"] * summary["torso_twist_last"]) / 100.0
+    summary["tilt_pelvis_interaction"] = float(summary["lateral_trunk_tilt_last"] * summary["hip_angle_last"]) / 100.0
+    summary["stance_foot_offset"] = float(summary.get("l_foot_rel_x_last", 0) - summary.get("r_foot_rel_x_last", 0))
+
+    # 4. CINEMÁTICA E DISTÂNCIA DO PÉ DE APOIO (Plant Foot Placement & Stance Leg Pillar)
+    is_rf = (str(kicking_foot).upper() == "R")
+    if is_rf:
+        # Destro: o pé de apoio plantado no solo é o esquerdo
+        st_knee_flex = summary.get("l_knee_flex_last", 0.0)
+        kick_knee_flex = summary.get("r_knee_flex_last", 0.0)
+        st_foot_x = summary.get("l_foot_rel_x_last", 0.0)
+        kick_foot_x = summary.get("r_foot_rel_x_last", 0.0)
+        st_foot_y = summary.get("l_foot_rel_y_last", 0.0)
+        kick_foot_y = summary.get("r_foot_rel_y_last", 0.0)
+        # Destro inclinando para o apoio (esquerda) dá tilt negativo, logo -tilt é positivo
+        stance_lean = -summary.get("lateral_trunk_tilt_last", 0.0)
+    else:
+        # Esquerdino: o pé de apoio plantado no solo é o direito
+        st_knee_flex = summary.get("r_knee_flex_last", 0.0)
+        kick_knee_flex = summary.get("l_knee_flex_last", 0.0)
+        st_foot_x = summary.get("r_foot_rel_x_last", 0.0)
+        kick_foot_x = summary.get("l_foot_rel_x_last", 0.0)
+        st_foot_y = summary.get("r_foot_rel_y_last", 0.0)
+        kick_foot_y = summary.get("l_foot_rel_y_last", 0.0)
+        stance_lean = summary.get("lateral_trunk_tilt_last", 0.0)
+
+    summary["stance_knee_flex"] = float(st_knee_flex)
+    summary["kicking_knee_flex"] = float(kick_knee_flex)
+    summary["stance_foot_offset_x"] = float(st_foot_x)
+    summary["stance_foot_offset_y"] = float(st_foot_y)
+    summary["stance_lead_y"] = float(st_foot_y - kick_foot_y)
+    summary["knee_flex_ratio"] = float(st_knee_flex / (kick_knee_flex if kick_knee_flex > 1e-4 else 1.0))
+    summary["plant_base_spread"] = float(abs(st_foot_x - kick_foot_x))
+    summary["stance_lean"] = float(stance_lean)
+
+    return summary
 
     return summary
 
@@ -193,25 +297,27 @@ def build_dataset(fractions: list[float] = [0.5, 0.75, 1.0], augment_mirror: boo
         df_pose = pd.read_csv(pose_file)
 
         # 1. Amostra Original
+        raw_dir = str(meta["direction"]).strip().lower().replace("centre", "center")
+        orig_foot = str(meta["kicking_foot"]).upper()
+
         for frac in fractions:
-            feat_dict = generate_clip_summary_features(df_pose, fraction=frac)
+            feat_dict = generate_clip_summary_features(df_pose, fraction=frac, kicking_foot=orig_foot)
             if not feat_dict:
                 continue
 
             feat_dict["clip_id"] = clip_id
             feat_dict["player"] = meta["player"]
-            feat_dict["kicking_foot"] = str(meta["kicking_foot"]).upper()
-            feat_dict["direction"] = str(meta["direction"]).lower()
+            feat_dict["kicking_foot"] = orig_foot
+            feat_dict["direction"] = raw_dir
             rows.append(feat_dict)
 
         # 2. Amostra Espelhada Virtual
         if augment_mirror:
             df_pose_mirrored = mirror_pose_dataframe(df_pose)
 
-            orig_foot = str(meta["kicking_foot"]).upper()
             mirrored_foot = "L" if orig_foot == "R" else "R"
 
-            orig_dir = str(meta["direction"]).lower()
+            orig_dir = raw_dir
             if orig_dir == "left":
                 mirrored_dir = "right"
             elif orig_dir == "right":
@@ -220,7 +326,7 @@ def build_dataset(fractions: list[float] = [0.5, 0.75, 1.0], augment_mirror: boo
                 mirrored_dir = "center"
 
             for frac in fractions:
-                feat_m = generate_clip_summary_features(df_pose_mirrored, fraction=frac)
+                feat_m = generate_clip_summary_features(df_pose_mirrored, fraction=frac, kicking_foot=mirrored_foot)
                 if not feat_m:
                     continue
 

@@ -2,7 +2,8 @@
 Penalty Kick Direction Predictor - Interactive Dashboard
 Streamlit app with:
 - Live real-time video-goal synchronization
-- Custom video upload with on-the-fly feature calculation and model inference
+- Custom video upload with physics-informed interaction extraction
+- Automated integration with the top-performing benchmarked model
 - Biomechanical insight cards (Approach Angle, Pelvis Rotation, Trunk Torsion)
 """
 
@@ -16,19 +17,15 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+import sys
 from ultralytics import YOLO
-
-
-# Page configuration
-st.set_page_config(
-    page_title="Penalty Kick Predictor",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from src.features import generate_clip_summary_features
 DATA_DIR = BASE_DIR / "data"
 CLIPS_DIR = DATA_DIR / "clips"
 PROCESSED_DIR = DATA_DIR / "processed"
@@ -46,17 +43,21 @@ KEYPOINT_NAMES = [
 
 @st.cache_resource
 def load_model_artifacts():
-    """Loads the trained Random Forest model and metadata."""
+    """Loads the winning benchmarked model, scaler and metadata."""
     model_path = MODELS_DIR / "penalty_model.joblib"
     encoder_path = MODELS_DIR / "label_encoder.joblib"
     features_path = MODELS_DIR / "feature_names.joblib"
+    scaler_path = MODELS_DIR / "scaler.joblib"
+    winner_path = MODELS_DIR / "winner_name.joblib"
 
     if model_path.exists() and encoder_path.exists():
         model = joblib.load(model_path)
         encoder = joblib.load(encoder_path)
         features = joblib.load(features_path) if features_path.exists() else []
-        return model, encoder, features
-    return None, None, []
+        scaler = joblib.load(scaler_path) if scaler_path.exists() else None
+        winner_name = joblib.load(winner_path) if winner_path.exists() else "Model"
+        return model, encoder, features, scaler, winner_name
+    return None, None, [], None, "Model"
 
 
 def get_base64_video(video_path: Path) -> str:
@@ -146,62 +147,18 @@ def process_uploaded_video(uploaded_file) -> tuple[pd.DataFrame, Path, Path]:
 
 
 def extract_features_from_pose_dataframe(df_pose: pd.DataFrame, kicking_foot: str) -> dict[str, float]:
-    """Computes full feature vector from raw pose dataframe for on-the-fly model prediction."""
+    """Computes physics-informed feature vector including momentum interactions and stance foot metrics."""
     clean_df = df_pose.interpolate(method="linear", limit_direction="both").bfill().ffill().fillna(0.0)
-    total_frames = len(clean_df)
-    if total_frames == 0:
+    if clean_df.empty:
         return {}
 
-    row = clean_df.iloc[-1]
-    first_row = clean_df.iloc[0]
+    feat_dict = generate_clip_summary_features(clean_df, fraction=1.0, kicking_foot=kicking_foot)
+    if not feat_dict:
+        return {}
 
-    l_sh = (float(row.get("left_shoulder_x", 0)), float(row.get("left_shoulder_y", 0)))
-    r_sh = (float(row.get("right_shoulder_x", 0)), float(row.get("right_shoulder_y", 0)))
-    l_hip = (float(row.get("left_hip_x", 0)), float(row.get("left_hip_y", 0)))
-    r_hip = (float(row.get("right_hip_x", 0)), float(row.get("right_hip_y", 0)))
-    l_ank = (float(row.get("left_ankle_x", 0)), float(row.get("left_ankle_y", 0)))
-    r_ank = (float(row.get("right_ankle_x", 0)), float(row.get("right_ankle_y", 0)))
-
-    mid_sh = ((l_sh[0] + r_sh[0]) / 2.0, (l_sh[1] + r_sh[1]) / 2.0)
-    mid_hip = ((l_hip[0] + r_hip[0]) / 2.0, (l_hip[1] + r_hip[1]) / 2.0)
-
-    torso_len = np.sqrt((mid_sh[0] - mid_hip[0]) ** 2 + (mid_sh[1] - mid_hip[1]) ** 2)
-    if torso_len < 1e-4 or np.isnan(torso_len):
-        torso_len = 1.0
-
-    sh_deg = float(np.degrees(np.arctan2(r_sh[1] - l_sh[1], r_sh[0] - l_sh[0]))) if (r_sh[0] - l_sh[0]) != 0 else 0.0
-    hip_deg = float(np.degrees(np.arctan2(r_hip[1] - l_hip[1], r_hip[0] - l_hip[0]))) if (r_hip[0] - l_hip[0]) != 0 else 0.0
-    torso_twist = float(sh_deg - hip_deg)
-
-    start_hip_x = (float(first_row.get("left_hip_x", 0)) + float(first_row.get("right_hip_x", 0))) / 2.0
-    start_hip_y = (float(first_row.get("left_hip_y", 0)) + float(first_row.get("right_hip_y", 0))) / 2.0
-
-    dx_app = float(mid_hip[0] - start_hip_x)
-    dy_app = float(mid_hip[1] - start_hip_y)
-    app_angle = float(np.degrees(np.arctan2(dx_app, abs(dy_app) if abs(dy_app) > 1e-4 else 1.0)))
-
-    # Angular velocities
-    if total_frames >= 5:
-        old_row = clean_df.iloc[-5]
-        old_l_hip = (float(old_row.get("left_hip_x", 0)), float(old_row.get("left_hip_y", 0)))
-        old_r_hip = (float(old_row.get("right_hip_x", 0)), float(old_row.get("right_hip_y", 0)))
-        old_hip_deg = float(np.degrees(np.arctan2(old_r_hip[1] - old_l_hip[1], old_r_hip[0] - old_l_hip[0]))) if (old_r_hip[0] - old_l_hip[0]) != 0 else hip_deg
-        hip_velocity = hip_deg - old_hip_deg
-    else:
-        hip_velocity = 0.0
-
-    feat_dict = {
-        "shoulder_angle_last": sh_deg,
-        "hip_angle_last": hip_deg,
-        "torso_twist_last": torso_twist,
-        "ankle_distance_last": float(np.sqrt((l_ank[0] - r_ank[0]) ** 2 + (l_ank[1] - r_ank[1]) ** 2) / torso_len),
-        "hip_angular_velocity": float(hip_velocity),
-        "torso_twist_velocity": 0.0,
-        "approach_angle": float(app_angle),
-        "approach_lateral_drift": float(dx_app / torso_len),
-        "is_right_foot": 1 if kicking_foot.upper() in ["R", "RIGHT", "D"] else 0,
-        "pe_direito": 1 if kicking_foot.upper() in ["R", "RIGHT", "D"] else 0,
-    }
+    is_rf = 1 if kicking_foot.upper() in ["R", "RIGHT", "D"] else 0
+    feat_dict["is_right_foot"] = is_rf
+    feat_dict["pe_direito"] = is_rf
     return feat_dict
 
 
@@ -234,9 +191,15 @@ def compute_biomechanics_from_pose(df_pose: pd.DataFrame) -> dict[str, any]:
     dy = float(end_hip_y - start_hip_y)
     app_angle = float(np.degrees(np.arctan2(dx, abs(dy) if abs(dy) > 1e-4 else 1.0)))
 
+    # Lateral trunk tilt (angle with vertical)
+    dx_spine = (r_sh[0] + l_sh[0]) / 2.0 - end_hip_x
+    dy_spine = (r_sh[1] + l_sh[1]) / 2.0 - end_hip_y
+    lateral_tilt = float(np.degrees(np.arctan2(dx_spine, -dy_spine if abs(dy_spine) > 1e-4 else 1.0)))
+
     if np.isnan(hip_deg): hip_deg = 0.0
     if np.isnan(torso_twist): torso_twist = 0.0
     if np.isnan(app_angle): app_angle = 0.0
+    if np.isnan(lateral_tilt): lateral_tilt = 0.0
 
     abs_angle = abs(app_angle)
     if abs_angle > 28:
@@ -249,12 +212,13 @@ def compute_biomechanics_from_pose(df_pose: pd.DataFrame) -> dict[str, any]:
     return {
         "pelvis_deg": hip_deg,
         "torso_twist": torso_twist,
+        "lateral_tilt": lateral_tilt,
         "approach_angle": app_angle,
         "approach_type": app_type
     }
 
 
-def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model, encoder, feature_names, kicking_foot: str) -> tuple[list[dict], dict[str, float]]:
+def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model, encoder, feature_names, scaler, kicking_foot: str) -> tuple[list[dict], dict[str, float]]:
     """Calculates temporal probability evolution directly from the kicker's visual perspective."""
     total_frames = len(df_pose)
     duration = total_frames / 30.0
@@ -281,7 +245,12 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
                     else:
                         X_input[col] = 0.0
 
-                prob_raw = model.predict_proba(X_input)[0]
+                if scaler is not None and ("Logistic" in str(type(model)) or "SVC" in str(type(model))):
+                    X_input_scaled = scaler.transform(X_input)
+                    prob_raw = model.predict_proba(X_input_scaled)[0]
+                else:
+                    prob_raw = model.predict_proba(X_input)[0]
+
                 raw_dict = {cls_name: float(p) for cls_name, p in zip(encoder.classes_, prob_raw)}
                 final_probs = {
                     "left": raw_dict.get("left", 0.33),
@@ -289,7 +258,6 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
                     "right": raw_dict.get("right", 0.34),
                 }
 
-        # SE FOR UM VÍDEO NOVO (UPLOAD): Extrair atributos na hora e fazer previsão ao vivo!
         if not found_in_dataset:
             live_features = extract_features_from_pose_dataframe(df_pose, kicking_foot)
             X_live = pd.DataFrame([live_features])
@@ -298,7 +266,12 @@ def build_timeline_predictions(selected_clip: str, df_pose: pd.DataFrame, model,
                     X_live[col] = 0.0
             X_live = X_live[feature_names]
 
-            prob_raw = model.predict_proba(X_live)[0]
+            if scaler is not None and ("Logistic" in str(type(model)) or "SVC" in str(type(model))):
+                X_live_scaled = scaler.transform(X_live)
+                prob_raw = model.predict_proba(X_live_scaled)[0]
+            else:
+                prob_raw = model.predict_proba(X_live)[0]
+
             raw_dict = {cls_name: float(p) for cls_name, p in zip(encoder.classes_, prob_raw)}
             final_probs = {
                 "left": raw_dict.get("left", 0.33),
@@ -586,7 +559,7 @@ def main():
     st.title("Penalty Kick Direction Predictor")
     st.caption("Interpretable pre-contact direction prediction from body kinematics & pose estimation")
 
-    model, encoder, feature_names = load_model_artifacts()
+    model, encoder, feature_names, scaler, winner_name = load_model_artifacts()
 
     # Collapsible methodology tabs at the top
     with st.expander("Methodology, Biomechanical Foundations & Validation (Click to expand)", expanded=False):
@@ -676,6 +649,7 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**Player:** `{player_name}`")
     st.sidebar.markdown(f"**Dominant Foot:** `{'Right (R)' if kicking_foot == 'R' else 'Left (L)'}`")
+    st.sidebar.markdown(f"**Active Model:** `{winner_name}`")
     if actual_direction != "Unknown":
         st.sidebar.markdown(f"**Actual Outcome:** `{actual_direction}`")
 
@@ -686,7 +660,7 @@ def main():
     # Prepare timeline predictions
     video_b64 = get_base64_video(video_to_show)
     timeline_data, final_probs = build_timeline_predictions(
-        selected_clip, df_pose, model, encoder, feature_names, kicking_foot
+        selected_clip, df_pose, model, encoder, feature_names, scaler, kicking_foot
     )
 
     # 1. Main Live Synchronized Display
@@ -697,12 +671,13 @@ def main():
     st.markdown("<br>", unsafe_allow_html=True)
     bio_metrics = compute_biomechanics_from_pose(df_pose)
 
-    card1, card2, card3, card4 = st.columns(4)
+    card1, card2, card3, card4, card5 = st.columns(5)
     card1.metric("Pelvis Angle at Impact", f"{bio_metrics['pelvis_deg']:.1f}°")
     card2.metric("Trunk Torsion", f"{bio_metrics['torso_twist']:.1f}°")
-    card3.metric("Approach Angle", f"{bio_metrics['approach_angle']:.1f}°", f"{bio_metrics['approach_type']}")
+    card3.metric("Lateral Trunk Tilt", f"{bio_metrics.get('lateral_tilt', 0.0):.1f}°")
+    card4.metric("Approach Angle", f"{bio_metrics['approach_angle']:.1f}°", f"{bio_metrics['approach_type']}")
     pred_dir = max(final_probs, key=final_probs.get)
-    card4.metric("Predicted Target", pred_dir.upper(), f"{final_probs[pred_dir]:.1%} Conf.")
+    card5.metric("Predicted Target", pred_dir.upper(), f"{final_probs[pred_dir]:.1%} Conf.")
 
     # 3. Approach Progression Line Chart
     st.markdown("---")
